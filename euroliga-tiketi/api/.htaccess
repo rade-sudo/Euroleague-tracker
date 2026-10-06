@@ -1,0 +1,9 @@
+# Svi zahtjevi pod /api idu kroz index.php.
+RewriteEngine On
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteRule ^ index.php [QSA,L]
+
+# Pomoćni PHP fajlovi, skripta za naloge i SQL se ne otvaraju preko weba.
+<FilesMatch "^(config|config\.local|config\.local\.example|db|auth|tickets|users)\.php$|\.sql$">
+  Require all denied
+</FilesMatch>

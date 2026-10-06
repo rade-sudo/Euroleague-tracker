@@ -1,0 +1,22 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Barlow", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Barlow Condensed", ui-sans-serif, system-ui, sans-serif;
+
+  --color-ink: #0a0b0f;
+  --color-surface: #12141a;
+  --color-surface-2: #171a21;
+  --color-surface-hover: #1c2029;
+  --color-line: rgb(255 255 255 / 0.07);
+  --color-accent: #ff6a13;
+  --color-neon: #b8ff3c;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  @apply bg-ink font-sans text-zinc-300 antialiased;
+}

@@ -1,0 +1,22 @@
+# Glavni .htaccess za poddomen (Vite ga kopira u dist/ pri buildu).
+RewriteEngine On
+
+# Uvijek HTTPS: kolačić za prijavu se tada šalje samo preko sigurne veze.
+RewriteCond %{HTTPS} !=on
+RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+
+# API ima svoj .htaccess u folderu api/.
+RewriteRule ^api(/|$) - [L]
+
+# Postojeći fajlovi (JS, CSS, slike) idu direktno, a sve ostalo (npr. /prijava) na aplikaciju.
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
+RewriteRule ^ index.html [L]
+
+# index.html se ne kešira, da svi odmah dobiju novu verziju poslije postavljanja.
+<IfModule mod_headers.c>
+  <Files "index.html">
+    Header set Cache-Control "no-cache"
+  </Files>
+</IfModule>
