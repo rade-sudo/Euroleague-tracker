@@ -4,10 +4,18 @@ declare(strict_types=1);
 
 // Greške idu u log servera, ne u odgovor (pokvarile bi JSON i otkrile putanje).
 ini_set('display_errors', '0');
+// Vrijeme izvlačenja se upisuje po našoj zoni, bez obzira na zonu servera.
+date_default_timezone_set('Europe/Belgrade');
 
 require __DIR__ . '/db.php';
 require __DIR__ . '/auth.php';
 require __DIR__ . '/tickets.php';
+require __DIR__ . '/draws.php';
+require __DIR__ . '/players.php';
+require __DIR__ . '/schedule.php';
+require __DIR__ . '/stats.php';
+require __DIR__ . '/account.php';
+require __DIR__ . '/backups.php';
 
 header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store');
@@ -65,6 +73,19 @@ function parseResult(mixed $value): ?array
 function isDuplicateKey(PDOException $e): bool
 {
     return ($e->errorInfo[1] ?? null) === 1062;
+}
+
+// Raspored i poeni sa Euroleague sajta. Greška tu ne smije srušiti stranicu: ostaju stari podaci.
+function syncSafely(PDO $db): void
+{
+    try {
+        syncEuroleague($db);
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        error_log((string) $e);
+    }
 }
 
 function loadState(PDO $db): array
@@ -138,23 +159,92 @@ if ($route === '/me' && $method === 'GET') {
 // Svako smije mijenjati svoj tiket; sve ostale izmjene radi samo admin.
 $isTicketEdit = ($method === 'POST' && preg_match('#^/rounds/\d+/picks$#', $route))
     || ($method === 'DELETE' && preg_match('#^/picks/\d+$#', $route));
-if ($method !== 'GET' && !$isTicketEdit && $user['role'] !== 'admin') {
+$isOwnAccount = $method === 'POST' && $route === '/account/password';
+if ($method !== 'GET' && !$isTicketEdit && !$isOwnAccount && $user['role'] !== 'admin') {
     fail(403, 'Samo admin može mijenjati tabelu.');
 }
 
 if ($route === '/state' && $method === 'GET') {
+    syncSafely($db);
     respond(200, loadState($db));
 }
 
 if (preg_match('#^/rounds/(\d+)/tickets$#', $route, $m) && $method === 'GET') {
+    syncSafely($db);
     $round = findRound($db, (int) $m[1]);
+    $schedule = roundSchedule($db, (int) $round['number']);
     $reveal = $user['role'] === 'admin' ? (filter_var($_GET['reveal'] ?? null, FILTER_VALIDATE_INT) ?: null) : null;
-    respond(200, ['tickets' => loadTickets($db, $round, $user, $reveal)]);
+    respond(200, [
+        'round' => $round,
+        'tickets' => loadTickets($db, $round, $schedule, $user, $reveal),
+        // Izvučeni iz bubnja: u ovom kolu biraju po 2 igrača.
+        'twoPicks' => activeDrawFriendIds($db, (int) $round['id']),
+        'schedule' => $schedule,
+        'autoGrade' => (int) $round['number'] >= autoGradeFromRound($db),
+        'results' => roundResults($db, (int) $round['id']),
+    ]);
+}
+
+if ($route === '/draw' && $method === 'GET') {
+    respond(200, drawState($db));
+}
+
+if ($route === '/draw' && $method === 'POST') {
+    $db->beginTransaction();
+    $round = lockRound($db, readJson()['roundId'] ?? null);
+    $taken = activeDrawSlots($db, (int) $round['id']);
+    $free = array_values(array_diff(DRAW_SLOTS, $taken));
+    if (!$free) {
+        fail(409, 'Oba su već izvučena za ovo kolo.');
+    }
+    $friendId = drawIntoSlot($db, $round, $free[0], $user['id']);
+    $db->commit();
+    respond(200, ['drawnFriendId' => $friendId, 'state' => drawState($db)]);
+}
+
+// Zamjena: izvučeni ne igra ovo kolo, pa na njegovo mjesto izlazi novi iz bubnja.
+if ($route === '/draw/replace' && $method === 'POST') {
+    $body = readJson();
+    $db->beginTransaction();
+    $round = lockRound($db, $body['roundId'] ?? null);
+    $slot = filter_var($body['slot'] ?? null, FILTER_VALIDATE_INT);
+    $stmt = $db->prepare('UPDATE draws SET replaced_at = ? WHERE round_id = ? AND slot = ? AND replaced_at IS NULL AND cancelled_at IS NULL');
+    $stmt->execute([date('Y-m-d H:i:s'), $round['id'], $slot === false ? 0 : $slot]);
+    if ($stmt->rowCount() === 0) {
+        fail(404, 'Na tom mjestu nema izvučenog.');
+    }
+    $friendId = drawIntoSlot($db, $round, $slot, $user['id']);
+    $db->commit();
+    respond(200, ['drawnFriendId' => $friendId, 'state' => drawState($db)]);
+}
+
+// Poništavanje ne briše ništa: izvlačenje ostaje u istoriji označeno kao poništeno.
+if ($route === '/draw/cancel' && $method === 'POST') {
+    $db->beginTransaction();
+    $round = lockRound($db, readJson()['roundId'] ?? null);
+    $stmt = $db->prepare('UPDATE draws SET cancelled_at = ? WHERE round_id = ? AND cancelled_at IS NULL');
+    $stmt->execute([date('Y-m-d H:i:s'), $round['id']]);
+    if ($stmt->rowCount() === 0) {
+        fail(409, 'Za ovo kolo nema izvlačenja koje bi se poništilo.');
+    }
+    $db->commit();
+    respond(200, drawState($db));
+}
+
+if ($route === '/draw/rule' && $method === 'PUT') {
+    $rule = readJson()['rule'] ?? null;
+    if (!in_array($rule, DRAW_RULES, true)) {
+        fail(422, 'Nepoznato pravilo bubnja.');
+    }
+    setSetting($db, 'draw_rule', $rule);
+    respond(200, drawState($db));
 }
 
 if (preg_match('#^/rounds/(\d+)/picks$#', $route, $m) && $method === 'POST') {
     $round = findRound($db, (int) $m[1]);
-    if ($round['status'] !== 'open') {
+    $isAdmin = $user['role'] === 'admin';
+    // Admin smije dopisati igrača i posle roka (kad ga drugar zamoli), dok kolo nije završeno.
+    if ($round['status'] !== 'open' && !($isAdmin && $round['status'] === 'locked')) {
         fail(409, 'Kolo je zaključano, tiket se više ne može mijenjati.');
     }
     $body = readJson();
@@ -180,40 +270,155 @@ if (preg_match('#^/rounds/(\d+)/picks$#', $route, $m) && $method === 'POST') {
     if ((int) $stmt->fetchColumn() >= MAX_PICKS_PER_TICKET) {
         fail(422, 'Na tiketu može biti najviše ' . MAX_PICKS_PER_TICKET . ' igrača.');
     }
+    // Igrač izabran sa spiska, ili prepoznat iz upisanog teksta; inače ostaje tekst kako je upisan.
+    $catalogPlayer = isset($body['playerId'])
+        ? findPlayerById($db, $body['playerId'])
+        : matchPlayer(playerIndex($db), $player);
+    if ($catalogPlayer !== null) {
+        $player = mb_substr($catalogPlayer['name'], 0, MAX_PICK_NAME_LENGTH);
+    }
+    // Kad kolo ima raspored, igrač mora biti sa spiska: po klubu se zna utakmica, dan tiketa i rok.
+    $schedule = roundSchedule($db, (int) $round['number']);
+    $gameId = null;
+    if ($schedule) {
+        if ($catalogPlayer === null) {
+            fail(422, "Ne prepoznajem igrača „{$player}“. Izaberi ga sa spiska ispod polja.");
+        }
+        $gameId = gameForPick($db, $schedule, $catalogPlayer, (int) $round['number'], $isAdmin);
+    }
     try {
-        $db->prepare('INSERT INTO picks (round_id, friend_id, player, tip) VALUES (?, ?, ?, ?)')
-            ->execute([$round['id'], $friendId, $player, $tip]);
+        $db->prepare('INSERT INTO picks (round_id, friend_id, player_id, game_id, player, tip) VALUES (?, ?, ?, ?, ?, ?)')
+            ->execute([$round['id'], $friendId, $catalogPlayer['id'] ?? null, $gameId, $player, $tip]);
     } catch (PDOException $e) {
         if (($e->errorInfo[1] ?? null) === 1452) {
             fail(404, 'Prijatelj ne postoji.');
         }
         throw $e;
     }
-    respond(201, ['id' => (int) $db->lastInsertId(), 'player' => $player, 'tip' => $tip, 'hit' => null]);
+    respond(201, loadPick($db, (int) $db->lastInsertId()));
+}
+
+if ($route === '/account' && $method === 'GET') {
+    respond(200, accountPayload($db, $user));
+}
+
+if ($route === '/account/password' && $method === 'POST') {
+    $body = readJson();
+    changePassword($db, $user, (string) ($body['current'] ?? ''), (string) ($body['next'] ?? ''), $_SERVER['REMOTE_ADDR'] ?? '');
+    respond(200, accountPayload($db, $user));
+}
+
+// Rezervne kopije baze: samo admin.
+if (str_starts_with($route, '/backup') && $method === 'GET' && $user['role'] !== 'admin') {
+    fail(403, 'Rezervne kopije vidi samo admin.');
+}
+
+if ($route === '/backups' && $method === 'GET') {
+    respond(200, ['files' => listBackups(), 'keep' => BACKUP_KEEP]);
+}
+
+if ($route === '/backup/download' && $method === 'GET') {
+    sendSqlDownload('euroliga-tiketi-' . date('Y-m-d') . '.sql', createBackupSql($db));
+}
+
+if (preg_match('#^/backups/([^/]+)$#', $route, $m) && $method === 'GET') {
+    $name = rawurldecode($m[1]);
+    $path = backupDir() . DIRECTORY_SEPARATOR . $name;
+    if (!preg_match(BACKUP_NAME_PATTERN, $name) || !is_file($path)) {
+        fail(404, 'Ta kopija ne postoji.');
+    }
+    sendSqlDownload($name, (string) file_get_contents($path));
+}
+
+if ($route === '/stats' && $method === 'GET') {
+    respond(200, statsPayload($db));
+}
+
+if ($route === '/players' && $method === 'GET') {
+    respond(200, playersPayload($db, $user['role'] === 'admin'));
+}
+
+if ($route === '/players/refresh' && $method === 'POST') {
+    $result = refreshPlayers($db);
+    respond(200, ['result' => $result, 'catalog' => playersPayload($db, true)]);
+}
+
+// Skraćenica: kako neko piše igrača. Odmah povezuje i već upisane igrače sa tim imenom.
+if ($route === '/players/aliases' && $method === 'POST') {
+    $body = readJson();
+    $alias = normalizeName($body['alias'] ?? '');
+    $normalized = normalizePlayerName($alias);
+    if ($normalized === '') {
+        fail(422, 'Upiši skraćenicu.');
+    }
+    if (mb_strlen($alias) > 60) {
+        fail(422, 'Skraćenica može imati najviše 60 znakova.');
+    }
+    $player = findPlayerById($db, $body['playerId'] ?? null);
+    $stmt = $db->prepare('SELECT p.name FROM player_aliases a JOIN players p ON p.id = a.player_id WHERE a.normalized = ?');
+    $stmt->execute([$normalized]);
+    if (($existing = $stmt->fetchColumn()) !== false) {
+        fail(409, "Skraćenica „{$alias}“ već postoji i vodi na igrača {$existing}.");
+    }
+    $db->beginTransaction();
+    $db->prepare('INSERT INTO player_aliases (player_id, alias, normalized, created_at) VALUES (?, ?, ?, ?)')
+        ->execute([$player['id'], $alias, $normalized, date('Y-m-d H:i:s')]);
+    $linked = linkUnlinkedPicks($db);
+    $db->commit();
+    respond(201, ['linked' => $linked, 'catalog' => playersPayload($db, true)]);
+}
+
+if (preg_match('#^/players/aliases/(\d+)$#', $route, $m) && $method === 'DELETE') {
+    $stmt = $db->prepare('DELETE FROM player_aliases WHERE id = ?');
+    $stmt->execute([(int) $m[1]]);
+    if ($stmt->rowCount() === 0) {
+        fail(404, 'Skraćenica ne postoji.');
+    }
+    respond(200, ['catalog' => playersPayload($db, true)]);
 }
 
 if (preg_match('#^/picks/(\d+)$#', $route, $m) && $method === 'DELETE') {
     $pick = findPick($db, (int) $m[1]);
     assertCanEditTicket($user, (int) $pick['friend_id']);
-    if ($pick['status'] !== 'open') {
+    $isAdmin = $user['role'] === 'admin';
+    if ($isAdmin ? $pick['status'] === 'done' : $pick['status'] !== 'open') {
         fail(409, 'Kolo je zaključano, tiket se više ne može mijenjati.');
+    }
+    $day = scheduleDayOfGame(roundSchedule($db, (int) $pick['number']), $pick['game_id'] === null ? null : (int) $pick['game_id']);
+    if (!$isAdmin && ($day['locked'] ?? false)) {
+        fail(409, 'Tiket za ' . dayAccusative($day['date']) . ' je zaključan u ' . substr($day['deadline'], 11)
+            . ', igrači za taj dan se više ne mogu mijenjati.');
     }
     $db->prepare('DELETE FROM picks WHERE id = ?')->execute([$pick['id']]);
     respond(204);
 }
 
-// Ocjena igrača (samo admin, kad je kolo završeno): {"hit": true | false | null}.
+// Granica sa Maxbeta (samo admin): {"line": "15.5" | null}. Ako je utakmica gotova, ocjena stiže odmah.
+if (preg_match('#^/picks/(\d+)/line$#', $route, $m) && $method === 'PUT') {
+    $pick = findPick($db, (int) $m[1]);
+    $line = parseLine(readJson()['line'] ?? null);
+    $db->beginTransaction();
+    $db->prepare('UPDATE picks SET line = ? WHERE id = ?')->execute([$line, $pick['id']]);
+    autoGradeRound($db, (int) $pick['round_id']);
+    $db->commit();
+    respond(200, ['pick' => loadPick($db, (int) $pick['id']), 'results' => roundResults($db, (int) $pick['round_id'])]);
+}
+
+// Ocjena igrača (samo admin, kad je njegov dan tiketa zaključan): {"hit": true | false | null}.
+// Ocjenu koju da admin automatske ne mijenjaju; prazna vraća igrača automatskim ocjenama.
 if (preg_match('#^/picks/(\d+)$#', $route, $m) && $method === 'PUT') {
     $pick = findPick($db, (int) $m[1]);
-    if ($pick['status'] !== 'done') {
-        fail(409, 'Igrači se ocjenjuju tek kad je kolo završeno.');
+    $schedule = roundSchedule($db, (int) $pick['number']);
+    if (!pickLocked($pick, $schedule, $pick['game_id'] === null ? null : (int) $pick['game_id'])) {
+        fail(409, 'Igrači se ocjenjuju tek kad se njihov tiket zaključa.');
     }
     $hit = readJson()['hit'] ?? null;
     if ($hit !== null && !is_bool($hit)) {
         fail(422, 'Ocjena mora biti pogođeno, promašeno ili prazno.');
     }
     $db->beginTransaction();
-    $db->prepare('UPDATE picks SET hit = ? WHERE id = ?')->execute([$hit === null ? null : (int) $hit, $pick['id']]);
+    $db->prepare('UPDATE picks SET hit = ?, graded_by = ? WHERE id = ?')
+        ->execute([$hit === null ? null : (int) $hit, $hit === null ? null : 'admin', $pick['id']]);
     $result = syncResultFromPicks($db, (int) $pick['round_id'], (int) $pick['friend_id']);
     $db->commit();
     respond(200, ['result' => $result]);

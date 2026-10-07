@@ -128,7 +128,7 @@ switch ($command) {
         $role = in_array('--admin', $argv, true) ? 'admin' : 'viewer';
         [$password, $generated] = askPassword();
         try {
-            $db->prepare('INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)')
+            $db->prepare('INSERT INTO users (username, password_hash, role, password_set_by_admin) VALUES (?, ?, ?, 1)')
                 ->execute([$username, password_hash($password, PASSWORD_DEFAULT), $role]);
         } catch (PDOException $e) {
             if (($e->errorInfo[1] ?? null) === 1062) {
@@ -143,7 +143,8 @@ switch ($command) {
     case 'reset':
         $user = findUser($db, normalizeUsername($argv[2] ?? ''));
         [$password, $generated] = askPassword();
-        $db->prepare('UPDATE users SET password_hash = ? WHERE id = ?')
+        // Lozinka od admina: korisnik u aplikaciji vidi podsjetnik da postavi svoju.
+        $db->prepare('UPDATE users SET password_hash = ?, password_set_by_admin = 1 WHERE id = ?')
             ->execute([password_hash($password, PASSWORD_DEFAULT), $user['id']]);
         $db->prepare('DELETE FROM sessions WHERE user_id = ?')->execute([$user['id']]);
         printPassword($user['username'], $password, $generated);

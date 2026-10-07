@@ -25,4 +25,8 @@ dist-ssr
 
 # Lozinka baze na serveru i izvoz baze (sadrži hasheve lozinki) ne idu u git
 api/config.local.php
+api/config.local.example.php
 deploy
+
+# Rezervne kopije baze (lokalno)
+backups

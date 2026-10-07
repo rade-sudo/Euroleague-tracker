@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api, LOGIN_PATH } from './api.js'
+import { api } from './api.js'
+import AppHeader from './AppHeader.jsx'
+import PasswordReminder from './PasswordReminder.jsx'
 import { BallIcon, PlusIcon, XIcon } from './icons.jsx'
 import RoundTickets from './RoundTickets.jsx'
+import { useSessionGuard } from './session.js'
 
 // Ranije su se podaci čuvali samo u pregledaču; ključ ostaje zbog jednokratnog uvoza u bazu.
 const LEGACY_STORAGE_KEY = 'euroliga-tiketi:v1'
@@ -114,28 +117,7 @@ export default function App() {
     }
   }, [applyLoaded, applyLoadError])
 
-  // Dugme "Nazad" (i poslije odjave) vraća stranicu iz keša pregledača bez ijednog poziva serveru.
-  // Zato je sakrivamo pri odlasku i ponovo učitavamo pri povratku; bez sesije /me vodi na prijavu.
-  // Pri povratku na tab provjeravamo sesiju, za slučaj odjave u drugom tabu ili isteka.
-  useEffect(() => {
-    function handlePageHide() {
-      document.documentElement.style.visibility = 'hidden'
-    }
-    function handlePageShow(event) {
-      if (event.persisted) window.location.reload()
-    }
-    function handleVisibilityChange() {
-      if (document.visibilityState === 'visible') api('/me').catch(() => {})
-    }
-    window.addEventListener('pagehide', handlePageHide)
-    window.addEventListener('pageshow', handlePageShow)
-    document.addEventListener('visibilitychange', handleVisibilityChange)
-    return () => {
-      window.removeEventListener('pagehide', handlePageHide)
-      window.removeEventListener('pageshow', handlePageShow)
-      document.removeEventListener('visibilitychange', handleVisibilityChange)
-    }
-  }, [])
+  useSessionGuard()
 
   // Upozori prije zatvaranja stranice ako neki rezultat još nije stigao do baze.
   useEffect(() => {
@@ -166,14 +148,6 @@ export default function App() {
         clearTimeout(timer)
         saveTimers.current.delete(key)
       }
-    }
-  }
-
-  async function logout() {
-    try {
-      await api('/logout', { method: 'POST' })
-    } finally {
-      window.location.replace(LOGIN_PATH)
     }
   }
 
@@ -331,6 +305,22 @@ export default function App() {
     }))
   }
 
+  // Rezultati jednog kola sa servera (npr. posle automatskih ocjena): {friendId: "2/3"}.
+  function applyRoundResults(roundId, values) {
+    setData((prev) => {
+      const next = { ...prev.results }
+      let changed = false
+      for (const friend of prev.friends) {
+        const value = values[friend.id] ?? ''
+        if ((next[friend.id]?.[roundId] ?? '') !== value) {
+          next[friend.id] = { ...next[friend.id], [roundId]: value }
+          changed = true
+        }
+      }
+      return changed ? { ...prev, results: next } : prev
+    })
+  }
+
   function setResult(friendId, roundId, raw) {
     const value = normalizeResult(raw)
     setData((prev) => ({
@@ -380,27 +370,11 @@ export default function App() {
       />
 
       <main className="relative mx-auto max-w-6xl space-y-6 px-4 py-8 sm:px-6 sm:py-12">
-        <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-          <div className="flex items-center gap-4">
-            <div className="grid size-12 shrink-0 place-items-center rounded-xl bg-accent text-ink shadow-lg shadow-accent/30">
-              <BallIcon className="size-7" />
-            </div>
-            <div>
-              <p className="font-display text-xs font-semibold uppercase tracking-[0.3em] text-accent">
-                Euroliga · Tiket tracker
-              </p>
-              <h1 className="font-display text-3xl font-bold uppercase leading-none tracking-wide text-white sm:text-4xl">
-                Pogođeni igrači
-              </h1>
-            </div>
-          </div>
-          {ready && (
-            <div className="flex flex-col items-start gap-3 sm:items-end">
-              <UserBadge user={user} onLogout={logout} />
-              {isAdmin && <SaveStatus save={save} />}
-            </div>
-          )}
-        </header>
+        <AppHeader user={ready ? user : null} active="tabela">
+          {isAdmin && <SaveStatus save={save} />}
+        </AppHeader>
+
+        {ready && <PasswordReminder user={user} />}
 
         {isAdmin && legacyData && friends.length === 0 && (
           <LegacyImportBanner
@@ -491,6 +465,7 @@ export default function App() {
             isAdmin={isAdmin}
             onRoundChange={replaceRound}
             onResultChange={applyResult}
+            onRoundResults={applyRoundResults}
           />
         )}
 
@@ -752,31 +727,6 @@ function Legend({ showKeyboardHint }) {
           prelazi na sljedećeg prijatelja
         </p>
       )}
-    </div>
-  )
-}
-
-function UserBadge({ user, onLogout }) {
-  const isAdmin = user.role === 'admin'
-  return (
-    <div className="flex items-center gap-3">
-      <div className="flex items-center gap-2 text-sm">
-        <span className="font-semibold text-zinc-100">{user.username}</span>
-        <span
-          className={`rounded px-1.5 py-0.5 font-display text-[10px] font-bold uppercase tracking-[0.18em] ring-1 ring-inset ${
-            isAdmin ? 'bg-accent/10 text-accent ring-accent/30' : 'bg-white/5 text-zinc-400 ring-white/10'
-          }`}
-        >
-          {isAdmin ? 'Admin' : 'Samo pregled'}
-        </span>
-      </div>
-      <button
-        type="button"
-        onClick={onLogout}
-        className="h-8 rounded-lg border border-line px-3 text-xs font-medium text-zinc-400 transition hover:border-white/20 hover:text-white"
-      >
-        Odjava
-      </button>
     </div>
   )
 }

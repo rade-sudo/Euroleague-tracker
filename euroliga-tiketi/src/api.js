@@ -7,6 +7,14 @@ export class ApiError extends Error {
   }
 }
 
+export async function logout() {
+  try {
+    await api('/logout', { method: 'POST' })
+  } finally {
+    window.location.replace(LOGIN_PATH)
+  }
+}
+
 // Ako sesija istekne usred rada (401), šaljemo korisnika na prijavu.
 // Login stranica to isključuje sa redirectOnUnauthorized: false.
 export async function api(path, { redirectOnUnauthorized = true, ...options } = {}) {

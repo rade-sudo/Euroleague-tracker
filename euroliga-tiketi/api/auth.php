@@ -35,7 +35,20 @@ function sessionToken(): ?string
 
 function publicUser(array $user): array
 {
-    return ['username' => $user['username'], 'role' => $user['role'], 'friendId' => $user['friend_id']];
+    return [
+        'username' => $user['username'],
+        'role' => $user['role'],
+        'friendId' => $user['friend_id'],
+        // Još koristi lozinku od admina: aplikacija ga podsjeća da postavi svoju.
+        'passwordSetByAdmin' => (bool) $user['password_set_by_admin'],
+        'lastLoginAt' => $user['last_login_at'],
+    ];
+}
+
+function sessionTokenHash(): ?string
+{
+    $token = sessionToken();
+    return $token === null ? null : hash('sha256', $token);
 }
 
 // Bez "Zapamti me" kolačić nestaje kad se zatvori pregledač (expires 0).
@@ -56,9 +69,11 @@ function currentUser(PDO $db): ?array
     }
     $tokenHash = hash('sha256', $token);
     $stmt = $db->prepare(
-        'SELECT u.id, u.username, u.role, u.friend_id, s.remember, UNIX_TIMESTAMP(s.expires_at) AS expires_at
+        "SELECT u.id, u.username, u.role, u.friend_id, u.password_set_by_admin,
+                DATE_FORMAT(u.last_login_at, '%Y-%m-%dT%H:%i:%s') AS last_login_at,
+                s.remember, UNIX_TIMESTAMP(s.expires_at) AS expires_at
          FROM sessions s JOIN users u ON u.id = s.user_id
-         WHERE s.token_hash = ? AND s.expires_at > NOW()'
+         WHERE s.token_hash = ? AND s.expires_at > NOW()"
     );
     $stmt->execute([$tokenHash]);
     $row = $stmt->fetch();
@@ -74,7 +89,14 @@ function currentUser(PDO $db): ?array
         setSessionCookie($token, $expires);
     }
 
-    return ['id' => (int) $row['id'], 'username' => $row['username'], 'role' => $row['role'], 'friend_id' => $row['friend_id']];
+    return [
+        'id' => (int) $row['id'],
+        'username' => $row['username'],
+        'role' => $row['role'],
+        'friend_id' => $row['friend_id'],
+        'password_set_by_admin' => $row['password_set_by_admin'],
+        'last_login_at' => $row['last_login_at'],
+    ];
 }
 
 function endSession(PDO $db): void
@@ -86,8 +108,8 @@ function endSession(PDO $db): void
     setSessionCookie('', 1);
 }
 
-// Vraća korisnika ili null; baca TooManyAttempts kad je IP blokiran.
-function attemptLogin(PDO $db, string $username, string $password, string $ip): ?array
+// Pogađanje lozinke (pri prijavi ili promjeni lozinke) blokira IP adresu na neko vrijeme.
+function assertNotBlocked(PDO $db, string $ip): void
 {
     $stmt = $db->prepare(
         'SELECT COUNT(*) FROM login_attempts WHERE ip = ? AND attempted_at > NOW() - INTERVAL ' . LOGIN_WINDOW_MINUTES . ' MINUTE'
@@ -96,14 +118,24 @@ function attemptLogin(PDO $db, string $username, string $password, string $ip): 
     if ((int) $stmt->fetchColumn() >= LOGIN_MAX_FAILURES) {
         throw new TooManyAttempts();
     }
+}
 
-    $stmt = $db->prepare('SELECT id, username, role, friend_id, password_hash FROM users WHERE username = ?');
+function recordFailedAttempt(PDO $db, string $ip, string $username): void
+{
+    $db->prepare('INSERT INTO login_attempts (ip, username) VALUES (?, ?)')->execute([$ip, mb_substr($username, 0, 24)]);
+}
+
+// Vraća korisnika ili null; baca TooManyAttempts kad je IP blokiran.
+function attemptLogin(PDO $db, string $username, string $password, string $ip): ?array
+{
+    assertNotBlocked($db, $ip);
+
+    $stmt = $db->prepare('SELECT id, username, role, friend_id, password_hash, password_set_by_admin FROM users WHERE username = ?');
     $stmt->execute([$username]);
     $user = $stmt->fetch() ?: null;
 
     if (!password_verify($password, $user['password_hash'] ?? DUMMY_PASSWORD_HASH) || $user === null) {
-        $db->prepare('INSERT INTO login_attempts (ip, username) VALUES (?, ?)')
-            ->execute([$ip, mb_substr($username, 0, 24)]);
+        recordFailedAttempt($db, $ip, $username);
         return null;
     }
 
@@ -113,9 +145,18 @@ function attemptLogin(PDO $db, string $username, string $password, string $ip): 
     }
     $db->prepare('DELETE FROM login_attempts WHERE ip = ? OR attempted_at < NOW() - INTERVAL 1 DAY')->execute([$ip]);
     $db->exec('DELETE FROM sessions WHERE expires_at < NOW()');
-    $db->prepare('UPDATE users SET last_login_at = NOW() WHERE id = ?')->execute([$user['id']]);
+    // Vrijeme po našoj zoni (PHP), ne po zoni MySQL servera.
+    $now = date('Y-m-d H:i:s');
+    $db->prepare('UPDATE users SET last_login_at = ? WHERE id = ?')->execute([$now, $user['id']]);
 
-    return ['id' => (int) $user['id'], 'username' => $user['username'], 'role' => $user['role'], 'friend_id' => $user['friend_id']];
+    return [
+        'id' => (int) $user['id'],
+        'username' => $user['username'],
+        'role' => $user['role'],
+        'friend_id' => $user['friend_id'],
+        'password_set_by_admin' => $user['password_set_by_admin'],
+        'last_login_at' => str_replace(' ', 'T', $now),
+    ];
 }
 
 final class TooManyAttempts extends RuntimeException

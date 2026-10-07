@@ -20,3 +20,23 @@
 body {
   @apply bg-ink font-sans text-zinc-300 antialiased;
 }
+
+/* Tailwind v4 dugmadima daje običnu strelicu; ručica pokazuje da se na nešto može kliknuti. */
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+}
+
+/* Izvučeno ime "iskače" u svoje mjesto na stranici Bubanj. */
+@keyframes pop {
+  from {
+    transform: scale(0.94);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}

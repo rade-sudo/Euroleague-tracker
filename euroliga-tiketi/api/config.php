@@ -11,4 +11,6 @@ return [
     'name' => getenv('DB_NAME') ?: ($local['name'] ?? 'euroliga_tiketi'),
     'user' => getenv('DB_USER') ?: ($local['user'] ?? 'root'),
     'pass' => getenv('DB_PASS') ?: ($local['pass'] ?? ''),
+    // Folder za automatske kopije baze; bez njega se bira sam (vidi backups.php).
+    'backup_dir' => getenv('BACKUP_DIR') ?: ($local['backup_dir'] ?? null),
 ];
