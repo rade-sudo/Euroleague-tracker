@@ -4,6 +4,7 @@ import './index.css'
 import { LOGIN_PATH } from './api.js'
 import AccountPage from './AccountPage.jsx'
 import App from './App.jsx'
+import CashPage from './CashPage.jsx'
 import DrumPage from './DrumPage.jsx'
 import InstallPrompt from './InstallPrompt.jsx'
 import Login from './Login.jsx'
@@ -21,6 +22,7 @@ function page() {
   if (path === '/igraci') return <PlayersPage />
   if (path === '/statistika') return <StatsPage />
   if (path === '/nalog') return <AccountPage />
+  if (path === '/kasa') return <CashPage />
   return <App />
 }
 

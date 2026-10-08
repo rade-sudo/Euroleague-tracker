@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from './api.js'
 import AppHeader from './AppHeader.jsx'
+import RoundWinners from './RoundWinners.jsx'
 import { useSessionGuard } from './session.js'
 
 const SORTS = [
@@ -101,6 +102,7 @@ export default function StatsPage() {
             onToggle={(key) => setExpanded((current) => (current === key ? null : key))}
           />
         )}
+        {load.status === 'ready' && <RoundWinners winners={stats.winners ?? []} friends={stats.friends} me={user.friendId} />}
       </main>
     </div>
   )

@@ -7,7 +7,7 @@ const MAX_PLAYER_LENGTH = 40;
 const MAX_TIP_LENGTH = 30;
 const ROUND_STATUSES = ['open', 'locked', 'done'];
 const ROUND_COLUMNS = "id, number, status, DATE_FORMAT(deadline_at, '%Y-%m-%dT%H:%i') AS deadline";
-const PICK_COLUMNS = 'id, friend_id, player_id, game_id, player, tip, line, points, did_play, hit, graded_by';
+const PICK_COLUMNS = 'id, friend_id, player_id, game_id, slip_id, player, tip, line, points, did_play, hit, graded_by';
 
 function findRound(PDO $db, int $id): array
 {
@@ -34,6 +34,7 @@ function pickPayload(array $row): array
         'id' => (int) $row['id'],
         'playerId' => $int($row['player_id']),
         'gameId' => $int($row['game_id']),
+        'slipId' => $int($row['slip_id']),
         'player' => $row['player'],
         'tip' => $row['tip'],
         'line' => $row['line'] === null ? null : (float) $row['line'],
@@ -69,9 +70,8 @@ function pickLocked(array $round, array $schedule, ?int $gameId): bool
     return $round['status'] !== 'open' || (scheduleDayOfGame($schedule, $gameId)['locked'] ?? false);
 }
 
-// Dok dan tiketa nije zaključan, svako vidi samo svoje igrače i broj igrača kod ostalih
-// (važi i za admina). Admin može namjerno otvoriti tuđi tiket ($reveal) da upiše igrače umjesto drugara.
-function loadTickets(PDO $db, array $round, array $schedule, array $user, ?int $reveal): array
+// Svi vide sve igrače odmah, da niko ne izabere istog igrača za isto veče.
+function loadTickets(PDO $db, array $round): array
 {
     $stmt = $db->prepare('SELECT ' . PICK_COLUMNS . ' FROM picks WHERE round_id = ? ORDER BY id');
     $stmt->execute([$round['id']]);
@@ -84,14 +84,60 @@ function loadTickets(PDO $db, array $round, array $schedule, array $user, ?int $
     foreach ($db->query('SELECT id FROM friends ORDER BY id') as $friend) {
         $friendId = (int) $friend['id'];
         $picks = $byFriend[$friendId] ?? [];
-        $ownOrRevealed = $friendId === ownFriendId($user) || $friendId === $reveal;
-        $visible = array_values(array_filter(
-            $picks,
-            fn (array $pick) => $ownOrRevealed || pickLocked($round, $schedule, $pick['gameId']),
-        ));
-        $tickets[] = ['friendId' => $friendId, 'count' => count($picks), 'picks' => $visible];
+        $tickets[] = ['friendId' => $friendId, 'count' => count($picks), 'picks' => $picks];
     }
     return $tickets;
+}
+
+// Isti igrač se ne bira dvaput u istom kolu: igra samo jednu utakmicu, pa je to uvijek isto veče.
+// Vraća ko ga je već izabrao i za koji dan, ili null.
+function duplicatePick(PDO $db, int $roundId, ?int $playerId, string $player): ?array
+{
+    $stmt = $db->prepare(
+        "SELECT p.friend_id, f.name, DATE_FORMAT(g.starts_at, '%Y-%m-%d') AS day
+         FROM picks p JOIN friends f ON f.id = p.friend_id LEFT JOIN games g ON g.id = p.game_id
+         WHERE p.round_id = ? AND " . ($playerId === null ? 'p.player_id IS NULL AND p.player = ?' : 'p.player_id = ?') . ' LIMIT 1'
+    );
+    $stmt->execute([$roundId, $playerId ?? $player]);
+    return $stmt->fetch() ?: null;
+}
+
+// Za karticu igrača: klub i ranija kola u kojima je biran i ocijenjen.
+function playerCards(PDO $db, array $tickets, int $roundId): object
+{
+    $ids = [];
+    foreach ($tickets as $ticket) {
+        foreach ($ticket['picks'] as $pick) {
+            if ($pick['playerId'] !== null) {
+                $ids[$pick['playerId']] = true;
+            }
+        }
+    }
+    $ids = array_keys($ids);
+    if (!$ids) {
+        return (object) [];
+    }
+    $in = implode(',', array_fill(0, count($ids), '?'));
+
+    $cards = [];
+    $stmt = $db->prepare("SELECT id, club_code, club_name FROM players WHERE id IN ({$in})");
+    $stmt->execute($ids);
+    foreach ($stmt as $row) {
+        $cards[(int) $row['id']] = ['club' => $row['club_name'], 'clubCode' => $row['club_code'], 'history' => []];
+    }
+    $stmt = $db->prepare(
+        "SELECT p.player_id, r.number, p.hit, p.points FROM picks p JOIN rounds r ON r.id = p.round_id
+         WHERE p.player_id IN ({$in}) AND p.round_id <> ? AND p.hit IS NOT NULL ORDER BY r.number, p.id"
+    );
+    $stmt->execute([...$ids, $roundId]);
+    foreach ($stmt as $row) {
+        $cards[(int) $row['player_id']]['history'][] = [
+            'round' => (int) $row['number'],
+            'hit' => (bool) $row['hit'],
+            'points' => $row['points'] === null ? null : (int) $row['points'],
+        ];
+    }
+    return (object) $cards;
 }
 
 // Rezultati kola iz tabele: {friendId: "2/3"}.

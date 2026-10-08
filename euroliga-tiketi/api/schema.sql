@@ -114,6 +114,20 @@ CREATE TABLE IF NOT EXISTS games (
   KEY idx_games_round (season, round)
 ) DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
 
+-- Tiket uplaćen na Maxbetu. Ulog je 2 KM po igraču na tiketu; kvotu i isplatu upisuje admin.
+-- day je dan tiketa (NULL za kolo bez rasporeda).
+CREATE TABLE IF NOT EXISTS slips (
+  id         INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  round_id   INT UNSIGNED NOT NULL,
+  day        DATE NULL,
+  number     TINYINT UNSIGNED NOT NULL,
+  odds       DECIMAL(9, 2) NULL,
+  payout     DECIMAL(9, 2) NULL,
+  created_at DATETIME NOT NULL,
+  KEY idx_slips_round (round_id),
+  CONSTRAINT fk_slips_round FOREIGN KEY (round_id) REFERENCES rounds (id) ON DELETE CASCADE
+) DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
+
 -- Igrači na tiketu. hit: NULL dok nije ocijenjen, zatim 1 (pogođen) ili 0.
 CREATE TABLE IF NOT EXISTS picks (
   id         INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -123,6 +137,8 @@ CREATE TABLE IF NOT EXISTS picks (
   player_id  INT UNSIGNED NULL,
   -- Utakmica igrača u tom kolu; po njoj se zna dan tiketa i rok.
   game_id    INT UNSIGNED NULL,
+  -- Tiket 1 ili 2 tog dana, kad se dan zaključa.
+  slip_id    INT UNSIGNED NULL,
   player     VARCHAR(40) NOT NULL,
   tip        VARCHAR(30) NOT NULL DEFAULT '',
   -- Granica sa Maxbeta (upisuje admin) i poeni posle utakmice; did_play 0 = nije igrao.
@@ -135,8 +151,10 @@ CREATE TABLE IF NOT EXISTS picks (
   KEY idx_picks_ticket (round_id, friend_id),
   KEY idx_picks_player (player_id),
   KEY idx_picks_game (game_id),
+  KEY idx_picks_slip (slip_id),
   CONSTRAINT fk_picks_player FOREIGN KEY (player_id) REFERENCES players (id) ON DELETE SET NULL,
   CONSTRAINT fk_picks_game   FOREIGN KEY (game_id)   REFERENCES games (id)   ON DELETE SET NULL,
+  CONSTRAINT fk_picks_slip   FOREIGN KEY (slip_id)   REFERENCES slips (id)   ON DELETE SET NULL,
   CONSTRAINT fk_picks_round  FOREIGN KEY (round_id)  REFERENCES rounds (id)  ON DELETE CASCADE,
   CONSTRAINT fk_picks_friend FOREIGN KEY (friend_id) REFERENCES friends (id) ON DELETE CASCADE
 );
@@ -147,7 +165,7 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT NOT NULL
 ) DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
 
-INSERT IGNORE INTO settings (name, value) VALUES ('draw_rule', 'pause'), ('auto_grade_from_round', '1');
+INSERT IGNORE INTO settings (name, value) VALUES ('draw_rule', 'pause'), ('auto_grade_from_round', '1'), ('slips_from_round', '1');
 
 -- Svako izvlačenje ostaje zapisano. Zamijenjeni dobijaju replaced_at,
 -- a poništeno izvlačenje cancelled_at, pa se sve vidi u istoriji.
@@ -186,4 +204,15 @@ CREATE TABLE IF NOT EXISTS notifications_sent (
   event_key VARCHAR(80) NOT NULL PRIMARY KEY,
   sent_at   DATETIME NOT NULL,
   KEY idx_notifications_sent_at (sent_at)
+) DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
+
+-- Uplate u kasu (admin upisuje i svoj novac kojim je platio tikete). Podizanje je sa minusom.
+CREATE TABLE IF NOT EXISTS cash_payments (
+  id         INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  friend_id  INT UNSIGNED NOT NULL,
+  amount     DECIMAL(9, 2) NOT NULL,
+  note       VARCHAR(80) NOT NULL DEFAULT '',
+  created_at DATETIME NOT NULL,
+  KEY idx_cash_friend (friend_id),
+  CONSTRAINT fk_cash_friend FOREIGN KEY (friend_id) REFERENCES friends (id) ON DELETE CASCADE
 ) DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;

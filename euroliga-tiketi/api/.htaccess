@@ -4,6 +4,6 @@ RewriteCond %{REQUEST_FILENAME} !-f
 RewriteRule ^ index.php [QSA,L]
 
 # Pomoćni PHP fajlovi, skripta za naloge i SQL se ne otvaraju preko weba.
-<FilesMatch "^(config|config\.local|config\.local\.example|db|auth|tickets|draws|players|schedule|push|notifications|notify-cron|stats|account|backups|backup-cron|users)\.php$|\.sql$">
+<FilesMatch "^(config|config\.local|config\.local\.example|db|auth|tickets|draws|players|schedule|slips|overview|push|notifications|notify-cron|stats|account|backups|backup-cron|users)\.php$|\.sql$">
   Require all denied
 </FilesMatch>

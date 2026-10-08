@@ -324,4 +324,5 @@ function syncEuroleague(PDO $db): void
     }
 
     advanceRounds($db);
+    ensureSlips($db);
 }

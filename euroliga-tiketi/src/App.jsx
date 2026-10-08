@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from './api.js'
 import AppHeader from './AppHeader.jsx'
+import MyOverview, { WinMark } from './MyOverview.jsx'
 import NotificationPrompt from './NotificationPrompt.jsx'
 import PasswordReminder from './PasswordReminder.jsx'
-import { BallIcon, PlusIcon, XIcon } from './icons.jsx'
+import { BallIcon, PlusIcon, TrophyIcon, XIcon } from './icons.jsx'
 import RoundTickets from './RoundTickets.jsx'
 import { useSessionGuard } from './session.js'
 
@@ -87,6 +88,8 @@ export default function App() {
   const saveTimers = useRef(new Map())
   const inFlight = useRef(0)
   const { friends, rounds, results } = data
+  const winners = data.winners ?? {}
+  const wonRound = (friendId, roundId) => winners[roundId]?.friendIds.includes(friendId) ?? false
   const ready = load.status === 'ready'
   const isAdmin = user?.role === 'admin'
 
@@ -377,6 +380,7 @@ export default function App() {
 
         {ready && <PasswordReminder user={user} />}
         {ready && <NotificationPrompt />}
+        {ready && <MyOverview friends={friends} rounds={rounds} results={results} winners={winners} me={data.me ?? null} />}
 
         {isAdmin && legacyData && friends.length === 0 && (
           <LegacyImportBanner
@@ -544,7 +548,18 @@ export default function App() {
                             <div className="flex min-w-28 items-center gap-2 sm:min-w-52 sm:gap-3">
                               <Avatar name={friend.name} isLeader={isLeader} />
                               <div className="min-w-0 flex-1">
-                                <p className="truncate font-semibold text-zinc-100">{friend.name}</p>
+                                <p className="flex min-w-0 items-center gap-1.5 font-semibold text-zinc-100">
+                                  <span className="truncate">{friend.name}</span>
+                                  {rounds.some((round) => wonRound(friend.id, round.id)) && (
+                                    <span
+                                      title="Osvojenih kola"
+                                      className="inline-flex shrink-0 items-center gap-1 rounded-[5px] bg-gold/12 px-1.5 font-display text-xs font-bold text-gold ring-1 ring-gold/40 ring-inset"
+                                    >
+                                      <TrophyIcon className="size-2.75" />
+                                      {rounds.filter((round) => wonRound(friend.id, round.id)).length}
+                                    </span>
+                                  )}
+                                </p>
                                 {isLeader && (
                                   <p className="font-display text-[10px] font-bold uppercase tracking-[0.2em] text-neon">
                                     Lider
@@ -572,6 +587,7 @@ export default function App() {
                                 key={round.id}
                                 className="border-b border-line bg-surface px-1.5 py-2.5 text-center transition-colors group-hover:bg-surface-hover"
                               >
+                                <span className="relative inline-block">
                                 {!isAdmin ? (
                                   <span
                                     className={`inline-grid h-10 w-16 place-items-center rounded-lg font-display text-base font-semibold tabular-nums ring-1 ring-inset ${
@@ -600,6 +616,8 @@ export default function App() {
                                   className={`h-10 w-16 rounded-lg text-center font-display text-base font-semibold tabular-nums outline-none ring-1 ring-inset transition placeholder:text-zinc-700 focus:bg-ink focus:ring-2 focus:ring-accent ${cellTone(parsed)}`}
                                 />
                                 )}
+                                {wonRound(friend.id, round.id) && <WinMark />}
+                                </span>
                               </td>
                             )
                           })}

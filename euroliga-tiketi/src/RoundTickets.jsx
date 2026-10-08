@@ -1,8 +1,9 @@
-import { Fragment, useEffect, useEffectEvent, useState } from 'react'
+import { Fragment, useEffect, useEffectEvent, useRef, useState } from 'react'
 import { api } from './api.js'
-import { ChevronIcon, LockIcon, XIcon } from './icons.jsx'
+import { ChevronIcon, EyeIcon, LockIcon, TrophyIcon, XIcon } from './icons.jsx'
 import PlayerInput from './PlayerInput.jsx'
-import { buildPlayerIndex } from './players.js'
+import { km, moneyInput } from './money.js'
+import { buildPlayerIndex, normalizePlayerName } from './players.js'
 
 const DAYS = ['nedjelja', 'ponedjeljak', 'utorak', 'srijeda', 'četvrtak', 'petak', 'subota']
 const SHORT_DAYS = ['ned', 'pon', 'uto', 'sri', 'čet', 'pet', 'sub']
@@ -136,6 +137,28 @@ function joinDeadlines(days) {
   ))
 }
 
+// "Sasha Vezenkov" -> VEZ, kao u zapisniku. Ako dva igrača kola imaju istu, dodaje se slovo imena: C.JON.
+function surnameAbbr(name) {
+  const parts = name.trim().split(/\s+/)
+  const surname = parts.length > 1 ? parts.slice(1).join('') : parts[0]
+  return surname.replace(/[^\p{L}]/gu, '').slice(0, 3).toUpperCase()
+}
+
+function abbreviations(picks) {
+  const names = new Map()
+  for (const pick of picks) {
+    const abbr = surnameAbbr(pick.player)
+    if (!names.has(abbr)) names.set(abbr, new Set())
+    names.get(abbr).add(pick.playerId ?? normalizePlayerName(pick.player))
+  }
+  return (pick) => {
+    const abbr = surnameAbbr(pick.player)
+    return names.get(abbr).size > 1 ? `${pick.player.trim()[0].toUpperCase()}.${abbr}` : abbr
+  }
+}
+
+const playerKey = (pick) => pick.playerId ?? normalizePlayerName(pick.player)
+
 const isUnderTip = (tip) => tip.startsWith('-') || tip.startsWith('−')
 
 // Isto pravilo kao na serveru: nije igrao = prošao, "+" traži više od granice, "−" manje.
@@ -185,12 +208,14 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
   const [tip, setTip] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [openPickId, setOpenPickId] = useState(null)
+  const [showNames, setShowNames] = useState(false)
+  const closeTimer = useRef(null)
 
   const sortedRounds = [...rounds].sort((a, b) => a.number - b.number)
   const round = rounds.find((r) => r.id === selectedId) ?? defaultRound(rounds)
   const roundId = round?.id
   const status = round?.status
-  const reveal = isAdmin && editingFriendId ? editingFriendId : null
 
   // Spisak igrača Eurolige za prijedloge pri upisu; bez njega polje radi kao obično.
   useEffect(() => {
@@ -213,7 +238,7 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
   useEffect(() => {
     if (!roundId) return undefined
     let ignore = false
-    api(`/rounds/${roundId}/tickets${reveal ? `?reveal=${reveal}` : ''}`).then(
+    api(`/rounds/${roundId}/tickets`).then(
       (data) => {
         if (ignore) return
         setTickets({
@@ -222,6 +247,10 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
           twoPicks: data.twoPicks ?? [],
           schedule: data.schedule ?? [],
           autoGrade: Boolean(data.autoGrade),
+          players: data.players ?? {},
+          slips: data.slips ?? [],
+          stakePerPlayer: data.stakePerPlayer ?? 2,
+          winner: data.winner ?? null,
         })
         applyServerRound(data)
       },
@@ -230,7 +259,7 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
     return () => {
       ignore = true
     }
-  }, [roundId, status, reveal, refreshKey])
+  }, [roundId, status, refreshKey])
 
   // Ponovno učitavanje u trenutku roka sljedećeg dana tiketa i, dok traju utakmice, na 5 minuta.
   useEffect(() => {
@@ -257,6 +286,20 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
     return () => clearTimeout(timer)
   }, [tickets])
 
+  useEffect(() => {
+    if (openPickId === null) return undefined
+    const onPointer = (event) => {
+      if (!event.target.closest('[data-crew-chip]')) setOpenPickId(null)
+    }
+    const onKey = (event) => event.key === 'Escape' && setOpenPickId(null)
+    document.addEventListener('pointerdown', onPointer)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('pointerdown', onPointer)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [openPickId])
+
   if (!round) return null
 
   const phase = PHASE[round.status]
@@ -281,6 +324,26 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
   const myGameIds = new Set((ownTicket?.picks ?? []).map((pick) => pick.gameId))
   const lockedDays = ticketDays.filter((day) => day.locked)
   const showForm = phase === 1 && ticketFriend && ownTicket
+  const crewPicks = loaded ? tickets.list.flatMap((ticket) => ticket.picks.map((pick) => ({ ...pick, friendId: ticket.friendId }))) : []
+  const abbreviate = abbreviations(crewPicks)
+  const owners = new Map()
+  for (const pick of crewPicks) {
+    const key = playerKey(pick)
+    owners.set(key, [...(owners.get(key) ?? []), pick.friendId])
+  }
+  const friendName = (id) => friends.find((friend) => friend.id === id)?.name ?? ''
+  const otherOwners = (pick, friendId) =>
+    [...new Set(owners.get(playerKey(pick)) ?? [])].filter((id) => id !== friendId).map(friendName)
+
+  // Miš otvara karticu prelaskom, a dodir (telefon) klikom; kratka pauza da kartica ne trepće.
+  function hoverChip(pickId) {
+    clearTimeout(closeTimer.current)
+    if (pickId === null) {
+      closeTimer.current = setTimeout(() => setOpenPickId(null), 150)
+    } else {
+      setOpenPickId(pickId)
+    }
+  }
   const steps = scheduled
     ? [
         'Drugari biraju igrače',
@@ -358,6 +421,57 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
     })
   }
 
+  const reloadTickets = () => setRefreshKey((key) => key + 1)
+
+  function createSlips(day) {
+    run(async () => {
+      await api(`/rounds/${round.id}/slips`, { method: 'POST', body: JSON.stringify({ day: day?.date ?? null }) })
+      reloadTickets()
+    })
+  }
+
+  function movePick(pick, number) {
+    run(async () => {
+      await api(`/picks/${pick.id}/slip`, { method: 'PUT', body: JSON.stringify({ number }) })
+      reloadTickets()
+    })
+  }
+
+  function saveSlip(slip, field, raw) {
+    const value = moneyInput(raw)
+    if (value === '' ? slip[field] === null : Number(value) === slip[field]) return
+    run(async () => {
+      await api(`/slips/${slip.id}`, { method: 'PUT', body: JSON.stringify({ [field]: value || null }) })
+      reloadTickets()
+    })
+  }
+
+  // Tiketi jednog dana (ili kola bez rasporeda, day = null), ispod tiketa drugara.
+  function slipsBlock(day) {
+    const date = day?.date ?? null
+    const dayPicks = sortByGame(
+      crewPicks.filter((pick) => (games.get(pick.gameId)?.day.date ?? null) === date),
+      games,
+    )
+    return (
+      <SlipsDay
+        key={`slips-${date}`}
+        day={day}
+        picks={dayPicks}
+        slips={tickets.slips.filter((slip) => slip.day === date)}
+        games={games}
+        friends={friends}
+        user={user}
+        isAdmin={isAdmin}
+        stakePerPlayer={tickets.stakePerPlayer}
+        busy={busy}
+        onCreate={() => createSlips(day)}
+        onMove={movePick}
+        onSave={saveSlip}
+      />
+    )
+  }
+
   function saveLine(friendId, pick, raw) {
     const text = raw.trim().replace(',', '.')
     if (text === (pick.line === null ? '' : String(pick.line))) return
@@ -396,6 +510,7 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
             manualResult={results[friend.id]?.[round.id] ?? ''}
             isMe={friend.id === user.friendId}
             twoPicks={twoPicks.has(friend.id)}
+            winner={finished && Boolean(tickets.winner?.friendIds.includes(friend.id))}
             finished={finished}
             isAdmin={isAdmin}
             autoGrade={autoGrade}
@@ -519,6 +634,9 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
             Zaključaj kolo
           </button>
         )}
+        {phase === 3 && loaded && tickets.winner && (
+          <WinnerBanner winner={tickets.winner} friends={friends} />
+        )}
         {isAdmin && phase === 2 && (
           <button
             type="button"
@@ -613,6 +731,13 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
                         onSelect={setSelectedPlayer}
                         placeholder="Igrač, npr. Vezenkov"
                         ariaLabel="Igrač"
+                        takenBy={(playerId) => {
+                          const pick = crewPicks.find((p) => p.playerId === playerId)
+                          if (!pick) return null
+                          // Kratko, da stane pored imena igrača: "Mladen S."
+                          const [first, last] = friendName(pick.friendId).split(/\s+/)
+                          return last ? `${first} ${last[0]}.` : first
+                        }}
                         emptyText={
                           scheduled
                             ? 'Nema na spisku. Provjeri kako se piše, ili javi adminu da osvježi spisak.'
@@ -638,12 +763,10 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
                       <LockIcon className="mt-0.5 size-4 shrink-0 text-accent" />
                       <span>
                         {editingFriendId
-                          ? scheduled
-                            ? 'Upisuješ igrače umjesto drugara. On ih vidi na svom tiketu, a ostali tek kad se njihov dan tiketa zaključa.'
-                            : 'Upisuješ igrače umjesto drugara. On ih vidi na svom tiketu, a ostali tek kad zaključaš kolo.'
+                          ? 'Upisuješ igrače umjesto drugara. Svi ih vide odmah, kao i ostale igrače.'
                           : scheduled
-                            ? 'Ostali ne vide tvoje igrače dok se njihov dan tiketa ne zaključa, pola sata prije prve utakmice. Do tada ih možeš mijenjati. Sve se čuva odmah, ne treba posebno slati.'
-                            : 'Ostali ne vide tvoje igrače dok admin ne zaključa kolo. Do tada ih možeš mijenjati. Sve se čuva odmah, ne treba posebno slati.'}
+                            ? 'Svi vide tvoje igrače odmah, da niko ne izabere istog igrača za isto veče. Možeš ih mijenjati do roka, pola sata prije prve utakmice tog dana. Sve se čuva odmah, ne treba posebno slati.'
+                            : 'Svi vide tvoje igrače odmah, da niko ne izabere istog igrača za isto veče. Možeš ih mijenjati dok admin ne zaključa kolo. Sve se čuva odmah, ne treba posebno slati.'}
                       </span>
                     </p>
                   </>
@@ -651,38 +774,62 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
               </div>
 
               <div className="flex min-w-0 flex-col gap-3.5">
-                <div className="flex items-baseline justify-between gap-3">
+                <div className="flex items-center justify-between gap-3">
                   <h3 className={panelTitleClass}>Ekipa</h3>
-                  <span className="text-[13px] text-zinc-400">igrači skriveni</span>
+                  <button
+                      type="button"
+                      onClick={() => setShowNames((value) => !value)}
+                      aria-pressed={showNames}
+                      className={`inline-flex h-7.5 items-center gap-1.5 rounded-lg px-2.5 text-[13px] font-semibold ring-1 ring-inset transition ${
+                        showNames ? 'bg-accent/12 text-accent ring-accent/35' : 'text-zinc-400 ring-white/16 hover:text-white'
+                      }`}
+                    >
+                      <EyeIcon className="size-4" />
+                      Prikaži imena
+                    </button>
                 </div>
-                <div className="flex flex-col overflow-hidden rounded-xl ring-1 ring-line ring-inset">
+                {/* Bez overflow-hidden, da kartica igrača ne bude odsječena. */}
+                <div className="flex flex-col rounded-xl ring-1 ring-line ring-inset">
                   {friends
                     .filter((friend) => friend.id !== user.friendId)
                     .map((friend) => {
                       const ticket = byFriend.get(friend.id)
                       const count = ticket?.count ?? 0
-                      const hidden = count - (ticket?.picks.length ?? 0)
                       const editing = friend.id === editingFriendId
                       return (
                         <div
                           key={friend.id}
-                          className={`flex items-center gap-3 border-b border-line px-3.5 py-2.75 last:border-b-0 ${editing ? 'bg-accent/6' : ''}`}
+                          className={`flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line px-3.5 py-2.75 first:rounded-t-xl last:rounded-b-xl last:border-b-0 ${editing ? 'bg-accent/6' : ''}`}
                         >
                           <TicketAvatar name={friend.name} />
-                          <div className="min-w-0 flex-1 font-semibold text-white">
+                          <div className="min-w-30 flex-1 font-semibold text-white">
                             <span className="block truncate">{friend.name}</span>
                             <small className={`block text-[13px] font-normal ${count ? 'text-zinc-400' : 'text-zinc-600'}`}>
                               {count ? `Predao · ${players(count)}` : 'Još nije predao'}
                             </small>
                           </div>
                           {twoPicks.has(friend.id) && <TwoPicksTag>2 igrača</TwoPicksTag>}
-                          {hidden > 0 && (
-                            <span className="flex gap-1" aria-label="Igrači su skriveni do zaključavanja">
-                              {Array.from({ length: Math.min(hidden, 6) }, (_, i) => (
-                                <i
-                                  key={i}
-                                  className="h-5.5 w-6.5 rounded-[5px] bg-[repeating-linear-gradient(135deg,rgba(255,255,255,0.07)_0_4px,rgba(255,255,255,0.02)_4px_8px)] ring-1 ring-line ring-inset"
-                                />
+                          {ticket?.picks.length > 0 && (
+                            <span className="flex gap-1">
+                              {sortByGame(ticket.picks, games).map((pick) => (
+                                <CrewChip
+                                  key={pick.id}
+                                  pick={pick}
+                                  abbr={abbreviate(pick)}
+                                  others={otherOwners(pick, friend.id)}
+                                  open={openPickId === pick.id}
+                                  onHover={hoverChip}
+                                  onToggle={() => setOpenPickId(openPickId === pick.id ? null : pick.id)}
+                                >
+                                  <PlayerCard
+                                    pick={pick}
+                                    owner={friend.name}
+                                    info={tickets.players[pick.playerId]}
+                                    game={games.get(pick.gameId)}
+                                    others={otherOwners(pick, friend.id)}
+                                    isAdmin={isAdmin}
+                                  />
+                                </CrewChip>
                               ))}
                             </span>
                           )}
@@ -695,15 +842,30 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
                               {editing ? 'Zatvori' : 'Upiši'}
                             </button>
                           )}
+                          {showNames && ticket?.picks.length > 0 && (
+                            <div className="flex basis-full flex-wrap gap-1.5 pl-11.5">
+                              {sortByGame(ticket.picks, games).map((pick) => {
+                                const game = games.get(pick.gameId)
+                                return (
+                                  <span
+                                    key={pick.id}
+                                    className="rounded-md bg-surface-2 px-2 py-0.5 text-[13px] text-zinc-400 ring-1 ring-line ring-inset"
+                                  >
+                                    <b className="font-semibold text-white">{pick.player}</b> {pick.tip || '+'}
+                                    {game ? ` · ${shortDay(game.day.date)}` : ''}
+                                  </span>
+                                )
+                              })}
+                            </div>
+                          )}
                         </div>
                       )
                     })}
                 </div>
-                {isAdmin && (
-                  <p className="text-[13px] text-zinc-400">
-                    Kao admin možeš otvoriti tiket drugara i upisati igrače umjesto njega, ako te zamoli.
-                  </p>
-                )}
+                <p className="text-[13px] text-zinc-400">
+                  Pređi mišem preko kockice ili je dodirni da vidiš igrača. Tačkica znači da je isti igrač i kod drugog drugara.
+                  {isAdmin && ' Preko „Upiši“ možeš upisati igrače umjesto drugara, ako te zamoli.'}
+                </p>
 
                 {scheduled && (
                   <>
@@ -726,12 +888,16 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
                     <span className="text-[13px] text-zinc-400">svi vide igrače tog dana</span>
                   </div>
                   {content}
+                  {slipsBlock(day)}
                 </div>
               )
             })}
           </>
         ) : (
-          board(null, phase === 3)
+          <>
+            {board(null, phase === 3)}
+            {scheduled ? ticketDays.map((day) => slipsBlock(day)) : slipsBlock(null)}
+          </>
         )}
       </div>
 
@@ -896,6 +1062,438 @@ function PickRow({ index, pick, game, children }) {
   )
 }
 
+// Kockica sa skraćenicom igrača (samo admin). Tačkica: isti igrač je i kod drugog drugara.
+function CrewChip({ pick, abbr, others, open, onHover, onToggle, children }) {
+  return (
+    <span
+      data-crew-chip
+      className="relative"
+      onPointerEnter={(event) => event.pointerType === 'mouse' && onHover(pick.id)}
+      onPointerLeave={(event) => event.pointerType === 'mouse' && onHover(null)}
+    >
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        aria-label={`${pick.player}${others.length ? ', isti igrač je i kod drugog drugara' : ''}`}
+        className={`grid h-6 min-w-10 place-items-center rounded-[5px] bg-[repeating-linear-gradient(135deg,rgba(255,255,255,0.05)_0_4px,rgba(255,255,255,0.015)_4px_8px)] bg-surface-2 px-1.75 font-display text-[13px] font-bold tracking-[0.08em] ring-1 ring-inset transition ${
+          open ? 'text-accent ring-accent' : others.length ? 'text-white ring-accent/35 hover:text-accent' : 'text-white ring-white/16 hover:text-accent hover:ring-accent'
+        }`}
+      >
+        {abbr}
+      </button>
+      {others.length > 0 && (
+        <span className="pointer-events-none absolute -top-0.75 -right-0.75 size-2 rounded-full bg-accent ring-2 ring-surface" />
+      )}
+      {open && children}
+    </span>
+  )
+}
+
+// Kartica igrača: klub, tip, utakmica i rok, granica i istorija kod vas.
+// Na telefonu izlazi odozdo preko cijele širine.
+function PlayerCard({ pick, owner, info, game, others, isAdmin }) {
+  const history = info?.history ?? []
+  const hits = history.filter((entry) => entry.hit).length
+  const last = [...history].reverse().find((entry) => entry.points !== null)
+  const tip = isUnderTip(pick.tip) ? '−' : pick.tip || '+'
+  const rows = [
+    game && {
+      label: 'Utakmica',
+      value: `${game.game.home} – ${game.game.away}`,
+      note: `${shortDate(game.day.date)} u ${timeOf(game.game.startsAt)}${
+        game.day.ticket ? (game.day.locked ? ' · zaključano' : ` · rok ${timeOf(game.day.deadline)}`) : ''
+      }`,
+    },
+    {
+      label: 'Granica',
+      value: pick.line === null ? '—' : `${pick.line} ${tip}`,
+      note: pick.line === null ? (isAdmin ? 'upisuješ kad izađe na Maxbetu' : 'admin je upisuje kad izađe na Maxbetu') : null,
+    },
+    {
+      label: 'Kod vas',
+      value: history.length ? `${history.length === 1 ? '1 put' : `${history.length} puta`}, prošao ${hits}/${history.length}` : 'prvi put',
+      history,
+    },
+    last && { label: 'Zadnji put', value: `${last.points} poena` },
+  ].filter(Boolean)
+
+  return (
+    <div
+      role="dialog"
+      aria-label={pick.player}
+      className="absolute top-[calc(100%+8px)] -right-1.5 z-30 w-73 rounded-xl bg-surface-hover p-3.5 text-left shadow-[inset_0_0_0_1px_rgba(255,255,255,0.16),0_24px_50px_-14px_rgba(0,0,0,0.95)] max-[600px]:fixed max-[600px]:inset-x-3 max-[600px]:top-auto max-[600px]:bottom-[calc(12px+env(safe-area-inset-bottom,0px))] max-[600px]:w-auto"
+    >
+      <div className="flex items-center gap-2.75">
+        <span className="grid size-10.5 shrink-0 place-items-center rounded-[10px] bg-accent/12 font-display text-sm font-extrabold tracking-[0.04em] text-accent ring-1 ring-accent/35 ring-inset">
+          {info?.clubCode ?? '?'}
+        </span>
+        <div className="min-w-0 flex-1">
+          <b className="block font-semibold leading-tight text-white">{pick.player}</b>
+          <small className="block text-[13px] text-zinc-400">
+            {info?.club ? `${info.club} · ` : ''}kod: {owner}
+          </small>
+        </div>
+        <span
+          title="Tip"
+          className="grid h-9.5 min-w-9.5 place-items-center rounded-[9px] bg-neon/10 px-2 font-display text-2xl font-extrabold text-neon ring-1 ring-neon/32 ring-inset"
+        >
+          {tip}
+        </span>
+      </div>
+      <dl className="mt-3 grid gap-px overflow-hidden rounded-[9px] bg-line">
+        {rows.map((row) => (
+          <div key={row.label} className="flex justify-between gap-3 bg-surface-2 px-2.5 py-2 text-[13px]">
+            <dt className="text-zinc-400">{row.label}</dt>
+            <dd className="text-right font-semibold text-white">
+              {row.value}
+              {row.note && <small className="block font-normal text-zinc-400">{row.note}</small>}
+              {row.history?.length > 0 && (
+                <span className="mt-0.75 flex justify-end gap-1">
+                  {row.history.map((entry, index) => (
+                    <i
+                      key={index}
+                      title={`kolo ${entry.round}`}
+                      className={`grid size-5 place-items-center rounded-[5px] font-display text-xs font-extrabold not-italic ${
+                        entry.hit ? 'bg-neon/10 text-neon' : 'bg-rose-500/10 text-rose-400'
+                      }`}
+                    >
+                      {entry.hit ? '✓' : '✗'}
+                    </i>
+                  ))}
+                </span>
+              )}
+            </dd>
+          </div>
+        ))}
+      </dl>
+      {others.length > 0 && (
+        <p className="mt-2.5 rounded-lg bg-accent/12 px-2.5 py-2 text-[12.5px] font-semibold text-accent ring-1 ring-accent/35 ring-inset">
+          ● Isti igrač je i kod: {others.join(', ')}
+        </p>
+      )}
+    </div>
+  )
+}
+
+const SLIP_PILLS = {
+  unpaid: { label: 'Nije uplaćen', tone: 'bg-white/6 text-zinc-400' },
+  pending: { label: 'U toku', tone: 'bg-[#7cc4ff]/10 text-[#7cc4ff]' },
+  won: { label: 'Prošao', tone: 'bg-neon/10 text-neon' },
+  lost: { label: 'Pao', tone: 'bg-rose-500/10 text-rose-400' },
+}
+
+// Tiket je prošao samo ako su prošli svi igrači na njemu (nije igrao = prošao).
+function slipStatus(picks) {
+  if (picks.some((pick) => pick.hit === false)) return 'lost'
+  if (picks.length && picks.every((pick) => pick.hit === true)) return 'won'
+  return 'pending'
+}
+
+// Tiketi dana: admin ih pravi i raspoređuje igrače, upisuje kvotu i isplatu.
+// Drugari vide tiket kad admin upiše kvotu (kad je uplaćen).
+function SlipsDay({ day, picks, slips, games, friends, user, isAdmin, stakePerPlayer, busy, onCreate, onMove, onSave }) {
+  const [showAssign, setShowAssign] = useState(null)
+  if (!slips.length && (!isAdmin || !picks.length)) return null
+
+  const slipOf = (pick) => slips.find((slip) => slip.id === pick.slipId) ?? null
+  const unassigned = picks.filter((pick) => !slipOf(pick))
+  const assignOpen = showAssign ?? (slips.some((slip) => slip.odds === null) || unassigned.length > 0)
+  const perFriend = new Map()
+  for (const pick of picks) perFriend.set(pick.friendId, (perFriend.get(pick.friendId) ?? 0) + 1)
+  const friendName = (id) => friends.find((friend) => friend.id === id)?.name ?? ''
+  const slipPicks = (slip) => picks.filter((pick) => pick.slipId === slip.id)
+
+  return (
+    <div className="flex flex-col gap-3.5 border-t border-line pt-5">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+        <h3 className={panelTitleClass}>Tiketi{day ? ` · ${dayTitle(day.date)}` : ''}</h3>
+        <div className="flex items-center gap-3 text-[13px] text-zinc-400">
+          <span>Ulog: {km(stakePerPlayer, { whole: true })} po igraču</span>
+          {isAdmin && slips.length > 0 && (
+            <button type="button" onClick={() => setShowAssign(!assignOpen)} className={smallLinkClass}>
+              {assignOpen ? 'Sakrij raspored' : 'Promijeni raspored'}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {isAdmin && !slips.length && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-ink p-3.5 ring-1 ring-line ring-inset">
+          <div className="min-w-0">
+            <b className="block font-semibold text-white">Tiketi još nisu napravljeni</b>
+            <small className="text-[13px] text-zinc-400">
+              {players(picks.length)} tog dana. Pravilo: 3–6 igrača jedan tiket, 7 i više dva.
+            </small>
+          </div>
+          <button type="button" disabled={busy} onClick={onCreate} className={`${primaryButtonClass} h-9.5 px-3.5 text-sm`}>
+            Napravi tikete
+          </button>
+        </div>
+      )}
+
+      {isAdmin && slips.length > 0 && assignOpen && (
+        <div className="rounded-xl bg-ink ring-1 ring-line ring-inset">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-3.5 py-2.5">
+            <span className="text-[13px] text-zinc-400">Raspored vidiš samo ti, dok ne upišeš kvotu.</span>
+            <span className="flex flex-wrap gap-2">
+              {[1, 2].map((number) => {
+                const slip = slips.find((s) => s.number === number)
+                const count = slip ? slipPicks(slip).length : 0
+                if (!slip && number === 2) return null
+                return (
+                  <span
+                    key={number}
+                    className="rounded-lg bg-neon/10 px-2.5 py-1 font-display text-[13px] font-bold uppercase tracking-[0.06em] text-neon ring-1 ring-neon/32 ring-inset"
+                  >
+                    Tiket {number}: {players(count)} · {km(count * stakePerPlayer, { whole: true })}
+                  </span>
+                )
+              })}
+            </span>
+          </div>
+          {picks.map((pick) => {
+            const game = games.get(pick.gameId)
+            const number = slipOf(pick)?.number ?? null
+            return (
+              <div
+                key={pick.id}
+                className="grid grid-cols-[34px_minmax(0,1fr)_auto] items-center gap-3 border-b border-dashed border-line px-3.5 py-2.5 last:border-b-0"
+              >
+                <TicketAvatar name={friendName(pick.friendId)} />
+                <div className="min-w-0">
+                  <b className="font-semibold wrap-anywhere text-white">{pick.player}</b>
+                  {perFriend.get(pick.friendId) > 1 && (
+                    <span className="ml-1.5 align-[1px]">
+                      <TwoPicksTag>{perFriend.get(pick.friendId)} igrača</TwoPicksTag>
+                    </span>
+                  )}
+                  <small className="block text-[12.5px] text-zinc-400">
+                    {friendName(pick.friendId)}
+                    {game ? ` · ${game.game.home} – ${game.game.away} · ${timeOf(game.game.startsAt)}` : ''}
+                    {number === null ? ' · nije na tiketu' : ''}
+                  </small>
+                </div>
+                <span className="inline-flex rounded-[9px] bg-surface-2 p-0.75 ring-1 ring-line ring-inset" role="group" aria-label={`Tiket za ${pick.player}`}>
+                  {[1, 2].map((target) => (
+                    <button
+                      key={target}
+                      type="button"
+                      disabled={busy || number === target}
+                      aria-pressed={number === target}
+                      onClick={() => onMove(pick, target)}
+                      className={`h-7.5 min-w-10.5 rounded-[7px] px-2.5 font-display text-[13px] font-bold uppercase tracking-[0.08em] transition ${
+                        number === target ? 'bg-accent/12 text-accent ring-1 ring-accent/35 ring-inset' : 'text-zinc-600 hover:text-white'
+                      }`}
+                    >
+                      T{target}
+                    </button>
+                  ))}
+                </span>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {slips.length > 0 && (
+        <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,330px),1fr))] gap-4">
+          {slips.map((slip) => (
+            <SlipCard
+              key={slip.id}
+              slip={slip}
+              day={day}
+              picks={slipPicks(slip)}
+              games={games}
+              friendName={friendName}
+              myFriendId={user.friendId}
+              isAdmin={isAdmin}
+              stakePerPlayer={stakePerPlayer}
+              onSave={onSave}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function SlipCard({ slip, day, picks, games, friendName, myFriendId, isAdmin, stakePerPlayer, onSave }) {
+  const status = slipStatus(picks)
+  const unpaid = slip.odds === null
+  const stake = picks.length * stakePerPlayer
+  const possible = unpaid ? null : stake * slip.odds
+  const value = status === 'won' ? (slip.payout ?? possible ?? 0) : 0
+  const mine = picks.filter((pick) => pick.friendId === myFriendId).length
+  const hits = picks.filter((pick) => pick.hit === true).length
+  const pill = SLIP_PILLS[unpaid ? 'unpaid' : status]
+  const inputClass = `mt-0.5 h-7.5 w-full rounded-[7px] border px-2 font-display text-lg font-extrabold tabular-nums text-white outline-none focus:border-solid focus:border-accent ${
+    unpaid ? 'border-dashed border-accent/35 bg-accent/12' : 'border-white/16 bg-surface-2'
+  }`
+
+  let foot
+  if (unpaid) {
+    foot = <span>Upiši kvotu sa listića kad uplatiš tiket. Tada ga vide svi.</span>
+  } else if (status === 'won') {
+    foot = isAdmin ? (
+      <>
+        <span>Isplata (sa listića)</span>
+        <span className="flex items-center gap-2">
+          <input
+            key={`${slip.id}:${slip.payout}`}
+            defaultValue={slip.payout === null ? '' : slip.payout.toFixed(2).replace('.', ',')}
+            placeholder={possible.toFixed(2).replace('.', ',')}
+            onBlur={(event) => onSave(slip, 'payout', event.target.value)}
+            onKeyDown={(event) => event.key === 'Enter' && event.currentTarget.blur()}
+            inputMode="decimal"
+            aria-label={`Isplata tiketa ${slip.number}`}
+            className="h-8 w-24 rounded-[7px] border border-dashed border-neon/32 bg-neon/10 px-2 text-right font-display text-[17px] font-extrabold tabular-nums text-white outline-none focus:border-solid focus:border-neon"
+          />
+          KM
+        </span>
+      </>
+    ) : (
+      <>
+        <span>
+          Isplata <b className="font-semibold text-neon">{km(value)}</b>
+        </span>
+        {mine > 0 && <span className="text-neon">tvoj dio {km((value * mine) / picks.length)}</span>}
+      </>
+    )
+  } else if (status === 'lost') {
+    foot = (
+      <>
+        <span>
+          Pogođeno {hits} od {picks.length}
+        </span>
+        <span>dobitak 0 KM</span>
+      </>
+    )
+  } else {
+    foot = (
+      <>
+        <span>Čeka ocjene</span>
+        <span>
+          {hits} od {picks.length} prošlo
+        </span>
+      </>
+    )
+  }
+
+  return (
+    <article
+      className={`flex min-w-0 flex-col rounded-xl bg-ink ring-1 ring-inset ${
+        status === 'won' && !unpaid ? 'shadow-[0_0_0_3px_rgba(184,255,60,0.08)] ring-neon/32' : 'ring-line'
+      }`}
+    >
+      <div className="flex items-center justify-between gap-2.5 border-b border-line px-3.5 py-3">
+        <div>
+          <h4 className="font-display text-[22px] font-extrabold uppercase leading-none tracking-[0.02em] text-white">
+            Tiket {slip.number}
+          </h4>
+          <small className="text-[12.5px] text-zinc-400">
+            {players(picks.length)}
+            {day ? ` · ${shortDate(day.date)}` : ''}
+          </small>
+        </div>
+        <span className={`rounded-full px-2.5 py-0.75 font-display text-xs font-bold uppercase tracking-[0.14em] ${pill.tone}`}>
+          {pill.label}
+        </span>
+      </div>
+      {picks.map((pick) => {
+        const game = games.get(pick.gameId)
+        const detail =
+          pick.didPlay === true
+            ? `${pick.points} poena`
+            : pick.didPlay === false
+              ? 'nije igrao'
+              : game
+                ? `${shortDay(game.day.date)} u ${timeOf(game.game.startsAt)}`
+                : ''
+        return (
+          <div key={pick.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2.5 border-b border-dashed border-line px-3.5 py-2.5">
+            <div className="min-w-0">
+              <b className="block font-semibold wrap-anywhere text-white">
+                {pick.player} <span className="font-normal text-zinc-400">{pick.tip || '+'}</span>
+              </b>
+              <small className="block text-[12.5px] text-zinc-400">
+                {friendName(pick.friendId)}
+                {detail ? ` · ${detail}` : ''}
+              </small>
+            </div>
+            <MarkState hit={pick.hit} />
+          </div>
+        )
+      })}
+      <div className="m-3.5 grid grid-cols-3 gap-px overflow-hidden rounded-[10px] bg-line">
+        <div className="min-w-0 bg-surface px-2.75 py-2.25">
+          <span className="font-display text-[11px] font-semibold uppercase tracking-[0.2em] text-zinc-400">
+            Ulog · {picks.length} × {stakePerPlayer}
+          </span>
+          <b className="block font-display text-[21px] font-extrabold leading-tight tabular-nums text-white">{km(stake, { whole: true })}</b>
+        </div>
+        <div className="min-w-0 bg-surface px-2.75 py-2.25">
+          <span className="font-display text-[11px] font-semibold uppercase tracking-[0.2em] text-zinc-400">Kvota</span>
+          {isAdmin ? (
+            <input
+              key={`${slip.id}:${slip.odds}`}
+              defaultValue={unpaid ? '' : slip.odds.toFixed(2).replace('.', ',')}
+              placeholder="npr. 11,24"
+              onBlur={(event) => onSave(slip, 'odds', event.target.value)}
+              onKeyDown={(event) => event.key === 'Enter' && event.currentTarget.blur()}
+              inputMode="decimal"
+              aria-label={`Kvota tiketa ${slip.number}`}
+              className={inputClass}
+            />
+          ) : (
+            <b className="block font-display text-[21px] font-extrabold leading-tight tabular-nums text-white">
+              {slip.odds.toFixed(2).replace('.', ',')}
+            </b>
+          )}
+        </div>
+        <div className="min-w-0 bg-surface px-2.75 py-2.25">
+          <span className="font-display text-[11px] font-semibold uppercase tracking-[0.2em] text-zinc-400">Mogući dobitak</span>
+          <b className="block font-display text-[21px] font-extrabold leading-tight tabular-nums text-white">
+            {possible === null ? '—' : possible.toFixed(2).replace('.', ',')}
+          </b>
+        </div>
+      </div>
+      <div className="mt-auto flex items-center justify-between gap-2.5 border-t border-line px-3.5 py-2.75 text-[13px] text-zinc-400">
+        {foot}
+      </div>
+    </article>
+  )
+}
+
+// "Pobjednik kola: Radovan Stakić · 2/2", a ispod čime je odlučeno kad je bilo izjednačeno.
+function WinnerBanner({ winner, friends }) {
+  const name = (id) => friends.find((friend) => friend.id === id)?.name ?? ''
+  const runnerUp = winner.runnerUp
+  const shared = winner.friendIds.length > 1
+  return (
+    <div className="flex items-center gap-3 rounded-xl bg-gold/12 py-2.5 pr-3.5 pl-2.5 ring-1 ring-gold/40 ring-inset">
+      <span className="grid size-10 shrink-0 place-items-center rounded-[10px] bg-gold text-ink shadow-[0_10px_24px_-10px_rgba(255,197,61,0.8)]">
+        <TrophyIcon className="size-5.5" />
+      </span>
+      <div className="min-w-0">
+        <span className="block font-display text-[11px] font-bold uppercase tracking-[0.2em] text-gold">
+          {shared ? 'Pobjednici kola' : 'Pobjednik kola'}
+        </span>
+        <b className="block font-semibold leading-tight text-white">
+          {winner.friendIds.map(name).join(', ')} · {winner.hits}/{winner.played}
+        </b>
+        <small className="text-[12.5px] text-zinc-400">
+          {shared
+            ? `isti procenat, pogođeni i poeni (${winner.points})`
+            : runnerUp
+              ? `${winner.points} poena igrača, ispred: ${name(runnerUp.friendId)} (${runnerUp.points})`
+              : `${winner.points} poena igrača`}
+        </small>
+      </div>
+    </div>
+  )
+}
+
 function TwoPicksTag({ children }) {
   return (
     <span className="shrink-0 whitespace-nowrap rounded-[5px] bg-neon/10 px-1.75 py-0.5 font-display text-[11px] font-bold uppercase tracking-[0.14em] text-neon">
@@ -904,7 +1502,7 @@ function TwoPicksTag({ children }) {
   )
 }
 
-function TicketCard({ friend, picks, games, manualResult, isMe, twoPicks, finished, isAdmin, autoGrade, busy, onGrade, onLine }) {
+function TicketCard({ friend, picks, games, manualResult, isMe, twoPicks, winner, finished, isAdmin, autoGrade, busy, onGrade, onLine }) {
   const result = picks.length ? ticketResult(picks) : null
 
   let foot = null
@@ -939,13 +1537,23 @@ function TicketCard({ friend, picks, games, manualResult, isMe, twoPicks, finish
   return (
     <article
       className={`flex min-w-0 flex-col rounded-xl bg-ink ring-1 ring-inset ${
-        isMe ? 'shadow-[0_0_0_3px_rgba(255,106,19,0.12)] ring-accent/35' : 'ring-line'
+        winner
+          ? 'shadow-[0_0_0_3px_rgba(255,197,61,0.1)] ring-gold/40'
+          : isMe
+            ? 'shadow-[0_0_0_3px_rgba(255,106,19,0.12)] ring-accent/35'
+            : 'ring-line'
       }`}
     >
       <div className="flex items-center gap-2.75 border-b border-line px-3.5 py-3.25">
         <TicketAvatar name={friend.name} isMe={isMe} />
         <div className="min-w-0 flex-1 truncate text-base font-semibold text-white">{friend.name}</div>
         {twoPicks && <TwoPicksTag>2 igrača</TwoPicksTag>}
+        {winner && (
+          <span className="inline-flex shrink-0 items-center gap-1 rounded-[5px] bg-gold py-px pr-1.75 pl-1.25 font-display text-[11px] font-extrabold uppercase tracking-[0.14em] text-ink">
+            <TrophyIcon className="size-3" />
+            Pobjednik
+          </span>
+        )}
         {isMe && (
           <span className="rounded bg-accent/12 px-1.5 py-px font-display text-[10px] font-bold uppercase tracking-[0.16em] text-accent">
             Ti

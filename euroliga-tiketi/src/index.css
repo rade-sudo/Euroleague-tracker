@@ -11,6 +11,8 @@
   --color-line: rgb(255 255 255 / 0.07);
   --color-accent: #ff6a13;
   --color-neon: #b8ff3c;
+  /* Pobjednik kola */
+  --color-gold: #ffc53d;
 }
 
 :root {

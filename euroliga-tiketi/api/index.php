@@ -13,6 +13,8 @@ require __DIR__ . '/tickets.php';
 require __DIR__ . '/draws.php';
 require __DIR__ . '/players.php';
 require __DIR__ . '/schedule.php';
+require __DIR__ . '/slips.php';
+require __DIR__ . '/overview.php';
 require __DIR__ . '/push.php';
 require __DIR__ . '/notifications.php';
 require __DIR__ . '/stats.php';
@@ -118,6 +120,8 @@ function loadState(PDO $db): array
         'rounds' => $rounds,
         // Objekti, ne nizovi, da JSON uvijek bude {friendId: {roundId: "1/2"}}.
         'results' => (object) array_map(fn (array $byRound) => (object) $byRound, $results),
+        // Pobjednik svakog završenog kola: {roundId: {friendIds, hits, played, points, runnerUp}}.
+        'winners' => (object) roundWinners($db),
     ];
 }
 
@@ -182,20 +186,25 @@ if ($method !== 'GET' && !$isTicketEdit && !$isOwnAccount && $user['role'] !== '
 
 if ($route === '/state' && $method === 'GET') {
     syncSafely($db);
-    respond(200, loadState($db));
+    respond(200, loadState($db) + ['me' => mePayload($db, $user)]);
 }
 
 if (preg_match('#^/rounds/(\d+)/tickets$#', $route, $m) && $method === 'GET') {
     syncSafely($db);
     $round = findRound($db, (int) $m[1]);
     $schedule = roundSchedule($db, (int) $round['number']);
-    $reveal = $user['role'] === 'admin' ? (filter_var($_GET['reveal'] ?? null, FILTER_VALIDATE_INT) ?: null) : null;
+    $tickets = loadTickets($db, $round);
     respond(200, [
         'round' => $round,
-        'tickets' => loadTickets($db, $round, $schedule, $user, $reveal),
+        'tickets' => $tickets,
+        'players' => playerCards($db, $tickets, (int) $round['id']),
         // Izvučeni iz bubnja: u ovom kolu biraju po 2 igrača.
         'twoPicks' => activeDrawFriendIds($db, (int) $round['id']),
         'schedule' => $schedule,
+        // Tiket 1 i 2 po danu; drugari vide samo uplaćene.
+        'slips' => roundSlips($db, (int) $round['id'], $user['role'] === 'admin'),
+        'stakePerPlayer' => STAKE_PER_PLAYER,
+        'winner' => roundWinners($db)[(int) $round['id']] ?? null,
         'autoGrade' => (int) $round['number'] >= autoGradeFromRound($db),
         'results' => roundResults($db, (int) $round['id']),
     ]);
@@ -304,6 +313,13 @@ if (preg_match('#^/rounds/(\d+)/picks$#', $route, $m) && $method === 'POST') {
         }
         $gameId = gameForPick($db, $schedule, $catalogPlayer, (int) $round['number'], $isAdmin);
     }
+    $duplicate = duplicatePick($db, (int) $round['id'], $catalogPlayer['id'] ?? null, $player);
+    if ($duplicate !== null) {
+        $when = $duplicate['day'] ? 'za ' . dayAccusative($duplicate['day']) : 'u ovom kolu';
+        fail(409, (int) $duplicate['friend_id'] === $friendId
+            ? "{$player} je već na ovom tiketu."
+            : "Igrača {$player} je već izabrao {$duplicate['name']} {$when}. Isti igrač se ne bira dvaput za isto veče.");
+    }
     try {
         $db->prepare('INSERT INTO picks (round_id, friend_id, player_id, game_id, player, tip) VALUES (?, ?, ?, ?, ?, ?)')
             ->execute([$round['id'], $friendId, $catalogPlayer['id'] ?? null, $gameId, $player, $tip]);
@@ -341,6 +357,52 @@ if ($route === '/push/test' && $method === 'POST') {
         fail(502, 'Probno obavještenje nije poslato. Isključi pa ponovo uključi obavještenja na ovom uređaju.');
     }
     respond(200, ['sent' => $sent]);
+}
+
+// Tiketi kola (samo admin): napravi po pravilu, prebaci igrača, kvota i isplata.
+if (preg_match('#^/rounds/(\d+)/slips$#', $route, $m) && $method === 'POST') {
+    $round = findRound($db, (int) $m[1]);
+    $day = readJson()['day'] ?? null;
+    if ($day !== null && (!is_string($day) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $day))) {
+        fail(422, 'Dan nije ispravan.');
+    }
+    $db->beginTransaction();
+    if (createSlipsForDay($db, (int) $round['id'], $day, true) === 0) {
+        fail(409, 'Za taj dan tiketi već postoje ili nema igrača.');
+    }
+    $db->commit();
+    respond(201, roundSlips($db, (int) $round['id'], true));
+}
+
+if (preg_match('#^/picks/(\d+)/slip$#', $route, $m) && $method === 'PUT') {
+    $db->beginTransaction();
+    movePickToSlip($db, (int) $m[1], readJson()['number'] ?? null);
+    $db->commit();
+    respond(204);
+}
+
+if (preg_match('#^/slips/(\d+)$#', $route, $m) && $method === 'PUT') {
+    updateSlip($db, (int) $m[1], readJson());
+    respond(204);
+}
+
+// Kasa: svi vide, uplate upisuje admin.
+if ($route === '/cash' && $method === 'GET') {
+    respond(200, cashPayload($db));
+}
+
+if ($route === '/cash/payments' && $method === 'POST') {
+    addCashPayment($db, readJson());
+    respond(201, cashPayload($db));
+}
+
+if (preg_match('#^/cash/payments/(\d+)$#', $route, $m) && $method === 'DELETE') {
+    $stmt = $db->prepare('DELETE FROM cash_payments WHERE id = ?');
+    $stmt->execute([(int) $m[1]]);
+    if ($stmt->rowCount() === 0) {
+        fail(404, 'Uplata ne postoji.');
+    }
+    respond(200, cashPayload($db));
 }
 
 if ($route === '/account' && $method === 'GET') {

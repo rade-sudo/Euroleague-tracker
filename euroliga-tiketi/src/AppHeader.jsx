@@ -5,6 +5,7 @@ const NAV = [
   { id: 'tabela', href: '/', label: 'Tabela' },
   { id: 'bubanj', href: '/bubanj', label: 'Bubanj' },
   { id: 'statistika', href: '/statistika', label: 'Statistika' },
+  { id: 'kasa', href: '/kasa', label: 'Kasa' },
   { id: 'igraci', href: '/igraci', label: 'Igrači', adminOnly: true },
 ]
 
@@ -31,14 +32,14 @@ export default function AppHeader({ user, active, children }) {
           <div className="flex flex-wrap items-center gap-x-4.5 gap-y-3">
             <nav
               aria-label="Glavna navigacija"
-              className="inline-flex rounded-[10px] bg-surface p-0.75 ring-1 ring-line ring-inset"
+              className="inline-flex max-w-full overflow-x-auto rounded-[10px] bg-surface p-0.75 ring-1 ring-line ring-inset"
             >
               {NAV.filter((item) => !item.adminOnly || user.role === 'admin').map((item) => (
                 <a
                   key={item.id}
                   href={item.href}
                   aria-current={item.id === active ? 'page' : undefined}
-                  className={`rounded-lg px-3.5 py-1.75 font-display text-sm font-bold uppercase tracking-[0.12em] transition ${
+                  className={`shrink-0 rounded-lg px-2.5 py-1.75 font-display sm:px-3.5 text-sm font-bold uppercase tracking-[0.12em] transition ${
                     item.id === active
                       ? 'bg-accent/12 text-accent ring-1 ring-accent/35 ring-inset'
                       : 'text-zinc-400 hover:text-white'

@@ -19,6 +19,8 @@ require __DIR__ . '/tickets.php';
 require __DIR__ . '/draws.php';
 require __DIR__ . '/players.php';
 require __DIR__ . '/schedule.php';
+require __DIR__ . '/slips.php';
+require __DIR__ . '/overview.php';
 require __DIR__ . '/push.php';
 require __DIR__ . '/notifications.php';
 

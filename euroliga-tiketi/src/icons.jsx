@@ -117,3 +117,12 @@ export function ShareIcon({ className }) {
     </Icon>
   )
 }
+
+export function TrophyIcon({ className }) {
+  return (
+    <Icon className={className} strokeWidth={2.2}>
+      <path d="M7 4h10v5a5 5 0 0 1-10 0z" />
+      <path d="M7 6H4.5a2.5 2.5 0 0 0 2.6 3.4M17 6h2.5a2.5 2.5 0 0 1-2.6 3.4M12 14v4M8 20h8" />
+    </Icon>
+  )
+}

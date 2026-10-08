@@ -58,5 +58,6 @@ function statsPayload(PDO $db): array
             'short' => $short[(int) $f['id']],
         ], $friends),
         'picks' => $picks,
+        'winners' => array_values(roundWinners($db)),
     ];
 }

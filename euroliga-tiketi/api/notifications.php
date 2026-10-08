@@ -8,9 +8,10 @@ const NOTIFICATION_TYPES = [
     'open' => ['name' => 'Novo kolo', 'when' => 'Kad admin otvori kolo'],
     'drum' => ['name' => 'Izvučen iz bubnja', 'when' => 'Kad te bubanj izvuče da biraš 2 igrača'],
     'deadline' => ['name' => 'Podsjetnik pred rok', 'when' => 'Sat prije roka, ako u kolu još nemaš nijednog igrača'],
-    'locked' => ['name' => 'Dan tiketa zaključan', 'when' => 'Kad se dan tiketa zaključa i svi vide igrače'],
+    'locked' => ['name' => 'Dan tiketa zaključan', 'when' => 'Kad se dan tiketa zaključa i igrači se više ne mogu mijenjati'],
     'graded' => ['name' => 'Ocjena mog igrača', 'when' => 'Kad tvoj igrač dobije ✓ ili ✗'],
     'results' => ['name' => 'Rezultati kola', 'when' => 'Kad su svi igrači kola ocijenjeni'],
+    'slip' => ['name' => 'Tiket prošao', 'when' => 'Kad tiket prođe, sa tvojim dijelom isplate'],
     'lines' => ['name' => 'Upiši granice', 'when' => 'Kad se dan tiketa zaključa', 'admin' => true],
     'waiting' => ['name' => 'Igrač čeka ocjenu', 'when' => 'Utakmica gotova, a granica nije upisana', 'admin' => true],
 ];
@@ -55,6 +56,12 @@ function saveNotificationSettings(PDO $db, array $user, mixed $off): void
 function dayAndTime(string $deadline): string
 {
     return DAY_NOMINATIVE[(int) date('w', strtotime($deadline))] . ' u ' . substr($deadline, 11, 5);
+}
+
+// 72.96 → "72,96 KM"
+function money(float $value): string
+{
+    return number_format($value, 2, ',', '.') . ' KM';
 }
 
 function playersCount(int $n): string
@@ -162,7 +169,7 @@ function collectNotificationEvents(PDO $db, array $users): array
             }
             if ($day['locked'] && $now < $deadline + NOTIFY_LATE_SECONDS && $dayPicks) {
                 $events[] = ['key' => "locked:{$roundId}:{$day['date']}", 'type' => 'locked', 'recipients' => $toAll(array_keys($users), [
-                    'title' => "Tiket za {$dayName} je zaključan", 'body' => "Igrači za {$dayName} su sada vidljivi. Pogledaj šta su ostali igrali.", 'tag' => "locked-{$roundId}-{$day['date']}",
+                    'title' => "Tiket za {$dayName} je zaključan", 'body' => "Igrači za {$dayName} se više ne mogu mijenjati. Srećno!", 'tag' => "locked-{$roundId}-{$day['date']}",
                 ])];
                 $withoutLine = count(array_filter($dayPicks, fn (array $p) => $p['line'] === null));
                 if ($number >= $autoFrom && $withoutLine > 0) {
@@ -202,16 +209,42 @@ function collectNotificationEvents(PDO $db, array $users): array
             ]]];
         }
 
+        // Tiket prošao: svima, a onima čiji su igrači na tiketu i njihov dio isplate.
+        foreach (playedSlips($db, [$roundId]) as $slip) {
+            if ($slip['status'] !== 'won') {
+                continue;
+            }
+            $when = $slip['day'] ? ', ' . DAY_NOMINATIVE[(int) date('w', strtotime($slip['day']))] : '';
+            $base = "Kolo {$number}{$when}: isplata " . money($slip['value']) . '.';
+            $recipients = [];
+            foreach ($users as $id => $u) {
+                $share = $u['friend_id'] === null ? 0 : ($slip['members'][(int) $u['friend_id']] ?? 0);
+                $recipients[$id] = [
+                    'title' => "Tiket {$slip['number']} je prošao!",
+                    'body' => $base . ($share ? ' Tvoj dio: ' . money($slip['value'] * $share / $slip['players']) . '.' : ''),
+                    'tag' => "slip-{$slip['id']}",
+                ];
+            }
+            $events[] = ['key' => "slip:{$slip['id']}", 'type' => 'slip', 'recipients' => $recipients];
+        }
+
         // Rezultati kola, kad je sve ocijenjeno.
         if ($round['status'] === 'done' && $picks && !array_filter($picks, fn (array $p) => $p['hit'] === null)) {
             $leader = tableLeader($db);
             $results = roundResults($db, $roundId);
+            $winner = roundWinners($db)[$roundId] ?? null;
+            $names = $db->query('SELECT id, name FROM friends')->fetchAll(PDO::FETCH_KEY_PAIR);
+            $winnerText = $winner
+                ? (count($winner['friendIds']) > 1 ? ' Pobjednici kola: ' : ' Pobjednik kola: ')
+                    . implode(', ', array_map(fn (int $id) => $names[$id] ?? '', $winner['friendIds'])) . " ({$winner['hits']}/{$winner['played']})."
+                : '';
             $recipients = [];
             foreach ($users as $id => $u) {
                 $own = $u['friend_id'] === null ? null : ($results->{$u['friend_id']} ?? null);
+                $won = $winner && $u['friend_id'] !== null && in_array((int) $u['friend_id'], $winner['friendIds'], true);
                 $recipients[$id] = [
-                    'title' => "Rezultati kola {$number}",
-                    'body' => ($own ? "Tvoj tiket: {$own}." : "Kolo {$number} je završeno.") . ($leader ? " Na vrhu tabele: {$leader}." : ''),
+                    'title' => $won ? "Osvojio si kolo {$number}!" : "Rezultati kola {$number}",
+                    'body' => ($own ? "Tvoj tiket: {$own}." : "Kolo {$number} je završeno.") . ($won ? '' : $winnerText) . ($leader ? " Na vrhu tabele: {$leader}." : ''),
                     'tag' => "results-{$roundId}",
                 ];
             }

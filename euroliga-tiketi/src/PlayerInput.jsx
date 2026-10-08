@@ -14,6 +14,8 @@ export default function PlayerInput({
   ariaLabel,
   className,
   emptyText = 'Nema na spisku. Biće sačuvan kako je upisan.',
+  // Ko je već izabrao igrača u ovom kolu (id igrača → ime), da se ne bira dvaput.
+  takenBy = () => null,
 }) {
   const listId = useId()
   const [open, setOpen] = useState(false)
@@ -95,11 +97,15 @@ export default function PlayerInput({
                   index === highlight ? 'bg-white/6' : ''
                 }`}
               >
-                <span className="truncate font-semibold text-white">{player.name}</span>
-                <span className={`shrink-0 text-xs ${player.active ? 'text-zinc-500' : 'text-zinc-600'}`}>
-                  {player.club ?? ''}
-                  {player.active ? '' : ' · ranije'}
-                </span>
+                <span className={`truncate font-semibold ${takenBy(player.id) ? 'text-zinc-500' : 'text-white'}`}>{player.name}</span>
+                {takenBy(player.id) ? (
+                  <span className="shrink-0 text-xs font-semibold text-accent">već izabran · {takenBy(player.id)}</span>
+                ) : (
+                  <span className={`shrink-0 text-xs ${player.active ? 'text-zinc-500' : 'text-zinc-600'}`}>
+                    {player.club ?? ''}
+                    {player.active ? '' : ' · ranije'}
+                  </span>
+                )}
               </li>
             ))
           ) : (
