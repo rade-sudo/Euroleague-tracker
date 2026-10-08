@@ -46,6 +46,8 @@ CREATE TABLE IF NOT EXISTS users (
   role          ENUM('admin', 'viewer') NOT NULL DEFAULT 'viewer',
   -- Red u tabeli koji pripada ovom nalogu (njegov tiket).
   friend_id     INT UNSIGNED NULL,
+  -- Obavještenja koja je isključio, npr. "graded,results".
+  notifications_off VARCHAR(200) NOT NULL DEFAULT '',
   created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   last_login_at TIMESTAMP NULL,
   UNIQUE KEY uq_users_username (username),
@@ -142,7 +144,7 @@ CREATE TABLE IF NOT EXISTS picks (
 -- Podešavanja aplikacije, npr. pravilo bubnja (all, pause, cycle).
 CREATE TABLE IF NOT EXISTS settings (
   name  VARCHAR(40) NOT NULL PRIMARY KEY,
-  value VARCHAR(255) NOT NULL
+  value TEXT NOT NULL
 ) DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
 
 INSERT IGNORE INTO settings (name, value) VALUES ('draw_rule', 'pause'), ('auto_grade_from_round', '1');
@@ -162,4 +164,26 @@ CREATE TABLE IF NOT EXISTS draws (
   CONSTRAINT fk_draws_round  FOREIGN KEY (round_id)  REFERENCES rounds (id)  ON DELETE CASCADE,
   CONSTRAINT fk_draws_friend FOREIGN KEY (friend_id) REFERENCES friends (id) ON DELETE CASCADE,
   CONSTRAINT fk_draws_user   FOREIGN KEY (drawn_by)  REFERENCES users (id)   ON DELETE SET NULL
+) DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
+
+-- Uređaji koji primaju obavještenja (jedan nalog može imati više telefona).
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  user_id         INT UNSIGNED NOT NULL,
+  endpoint        TEXT NOT NULL,
+  endpoint_hash   CHAR(64) NOT NULL,
+  p256dh          VARCHAR(120) NOT NULL,
+  auth            VARCHAR(60) NOT NULL,
+  created_at      DATETIME NOT NULL,
+  last_success_at DATETIME NULL,
+  UNIQUE KEY uq_push_endpoint (endpoint_hash),
+  KEY idx_push_user (user_id),
+  CONSTRAINT fk_push_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+) DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
+
+-- Svaki događaj (npr. „četvrtak kola 5 zaključan“) šalje se samo jednom.
+CREATE TABLE IF NOT EXISTS notifications_sent (
+  event_key VARCHAR(80) NOT NULL PRIMARY KEY,
+  sent_at   DATETIME NOT NULL,
+  KEY idx_notifications_sent_at (sent_at)
 ) DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from './api.js'
 import AppHeader from './AppHeader.jsx'
+import NotificationPrompt from './NotificationPrompt.jsx'
 import PasswordReminder from './PasswordReminder.jsx'
 import { BallIcon, PlusIcon, XIcon } from './icons.jsx'
 import RoundTickets from './RoundTickets.jsx'
@@ -375,6 +376,7 @@ export default function App() {
         </AppHeader>
 
         {ready && <PasswordReminder user={user} />}
+        {ready && <NotificationPrompt />}
 
         {isAdmin && legacyData && friends.length === 0 && (
           <LegacyImportBanner

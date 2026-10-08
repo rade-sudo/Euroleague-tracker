@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { api } from './api.js'
 import AppHeader from './AppHeader.jsx'
-import { AlertIcon, DownloadIcon, EyeIcon, EyeOffIcon } from './icons.jsx'
+import { AlertIcon, BellIcon, DownloadIcon, EyeIcon, EyeOffIcon } from './icons.jsx'
+import { currentSubscription, disablePush, enablePush, isIos, isStandalone, pushSupported } from './pwa.js'
 import { useSessionGuard } from './session.js'
 
 const MIN_LENGTH = 8
@@ -85,13 +86,13 @@ export default function AccountPage() {
                 Moj nalog
               </h2>
               <p className="text-zinc-400">
-                {isAdmin ? 'Tvoji podaci, promjena lozinke i rezervne kopije baze.' : 'Tvoji podaci i promjena lozinke.'}
+                {isAdmin
+                  ? 'Tvoji podaci, lozinka, obavještenja i rezervne kopije baze.'
+                  : 'Tvoji podaci, lozinka i obavještenja.'}
               </p>
             </div>
 
-            <div
-              className={`grid grid-cols-1 items-start gap-5 ${isAdmin ? 'min-[920px]:grid-cols-2' : 'max-w-140'}`}
-            >
+            <div className="grid grid-cols-1 items-start gap-5 min-[920px]:grid-cols-2">
               <div className="flex min-w-0 flex-col gap-5">
                 <section aria-labelledby="facts-title" className={cardClass}>
                   <div className="px-4.5 pt-4">
@@ -115,7 +116,10 @@ export default function AccountPage() {
                 />
               </div>
 
-              {isAdmin && <BackupCard backups={backups} />}
+              <div className="flex min-w-0 flex-col gap-5">
+                <NotificationsCard />
+                {isAdmin && <BackupCard backups={backups} />}
+              </div>
             </div>
           </>
         )}
@@ -382,6 +386,180 @@ function BackupCard({ backups }) {
           <AlertIcon className="mt-0.5 size-4 shrink-0 text-accent" />
           Kopije se čuvaju na serveru, van javnog foldera, pa ih niko ne može otvoriti preko linka.
         </p>
+      </div>
+    </section>
+  )
+}
+
+// Obavještenja: ovaj uređaj (dozvola na telefonu) i izbor šta se prima (važi za sve uređaje naloga).
+function NotificationsCard() {
+  const [settings, setSettings] = useState(null)
+  const [subscribed, setSubscribed] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState({ tone: '', text: '' })
+
+  useEffect(() => {
+    let ignore = false
+    api('/notifications').then(
+      (data) => !ignore && setSettings(data),
+      (loadError) => !ignore && setMessage({ tone: 'error', text: loadError.message }),
+    )
+    currentSubscription().then(
+      (subscription) => !ignore && setSubscribed(Boolean(subscription)),
+      () => !ignore && setSubscribed(false),
+    )
+    return () => {
+      ignore = true
+    }
+  }, [])
+
+  async function run(action, success = '') {
+    setBusy(true)
+    setMessage({ tone: '', text: '' })
+    try {
+      await action()
+      if (success) setMessage({ tone: 'ok', text: success })
+    } catch (actionError) {
+      setMessage({ tone: 'error', text: actionError.message })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function toggle(type) {
+    const types = settings.types.map((t) => (t.id === type.id ? { ...t, on: !t.on } : t))
+    setSettings({ ...settings, types })
+    run(async () => {
+      const off = types.filter((t) => !t.on).map((t) => t.id)
+      setSettings(await api('/notifications', { method: 'PUT', body: JSON.stringify({ off }) }))
+    })
+  }
+
+  let device
+  if (!pushSupported()) {
+    device = isIos() && !isStandalone()
+      ? 'Na iPhone-u obavještenja rade kad su Tiketi dodati na početni ekran (Safari → Podijeli → Dodaj na početni ekran), od iOS 16.4. Otvori Tikete sa početnog ekrana pa ih uključi ovdje.'
+      : 'Ovaj pregledač ne podržava obavještenja.'
+  } else if (Notification.permission === 'denied') {
+    device = 'Obavještenja su blokirana za Tikete. Uključi ih u podešavanjima telefona ili pregledača, pa se vrati ovdje.'
+  }
+
+  return (
+    <section aria-labelledby="notify-title" className={cardClass}>
+      <div className="px-4.5 pt-4">
+        <h3 id="notify-title" className="font-display text-[22px] font-bold uppercase tracking-[0.03em] text-white">
+          Obavještenja
+        </h3>
+        <p className="mt-0.5 text-[13.5px] text-zinc-400">Biraš šta želiš da primaš. Važi za sve tvoje uređaje.</p>
+      </div>
+      <div className="flex flex-col gap-3.5 px-4.5 pt-3.5 pb-4.5">
+        {device ? (
+          <p className="flex items-start gap-2.5 rounded-[10px] bg-white/3 px-3.25 py-2.75 text-[13px] text-zinc-400 ring-1 ring-line ring-inset">
+            <AlertIcon className="mt-0.5 size-4 shrink-0 text-accent" />
+            {device}
+          </p>
+        ) : (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-[10px] bg-ink p-3.5 ring-1 ring-line ring-inset">
+            <div className="min-w-0">
+              <b className="block font-semibold text-white">Ovaj uređaj</b>
+              <small className="text-[13px] text-zinc-400">
+                {subscribed === null
+                  ? 'Provjeravam…'
+                  : subscribed
+                    ? 'Obavještenja stižu na ovaj uređaj.'
+                    : 'Obavještenja nisu uključena.'}
+              </small>
+            </div>
+            {subscribed ? (
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => run(() => api('/push/test', { method: 'POST' }), 'Probno obavještenje je poslato.')}
+                  className="h-9.5 rounded-[9px] px-3 text-[13px] font-semibold text-accent transition hover:bg-white/5"
+                >
+                  Probaj
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() =>
+                    run(async () => {
+                      const data = await disablePush()
+                      if (data) setSettings(data)
+                      setSubscribed(false)
+                    })
+                  }
+                  className="h-9.5 rounded-[9px] px-3 text-[13px] text-zinc-400 transition hover:bg-white/5 hover:text-white"
+                >
+                  Isključi
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                disabled={busy || !settings || subscribed === null}
+                onClick={() =>
+                  run(async () => {
+                    setSettings(await enablePush(settings.publicKey))
+                    setSubscribed(true)
+                  }, 'Obavještenja su uključena na ovom uređaju.')
+                }
+                className={`${primaryClass} h-9.5 px-3.5 text-sm`}
+              >
+                <BellIcon className="size-4" />
+                Uključi
+              </button>
+            )}
+          </div>
+        )}
+
+        {message.text && (
+          <p role={message.tone === 'error' ? 'alert' : 'status'} className={`text-[13px] ${message.tone === 'error' ? 'text-rose-400' : 'text-neon'}`}>
+            {message.text}
+          </p>
+        )}
+
+        {settings === null ? (
+          <p className="text-sm text-zinc-500">Učitavanje…</p>
+        ) : (
+          <ul className="overflow-hidden rounded-[10px] ring-1 ring-line ring-inset">
+            {settings.types.map((type) => (
+              <li key={type.id} className="flex items-center gap-3.5 border-b border-line px-3.5 py-3 last:border-b-0">
+                <div className="min-w-0 flex-1">
+                  <b className="flex flex-wrap items-center gap-1.5 font-semibold text-white">
+                    {type.name}
+                    {type.admin && (
+                      <span className="rounded bg-accent/12 px-1.5 py-px font-display text-[10px] font-bold uppercase tracking-[0.14em] text-accent">
+                        Samo admin
+                      </span>
+                    )}
+                  </b>
+                  <small className="block text-[13px] text-zinc-400">{type.when}</small>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={type.on}
+                  aria-label={type.name}
+                  onClick={() => toggle(type)}
+                  className={`relative h-6.5 w-11 shrink-0 rounded-full transition after:absolute after:top-0.75 after:left-0.75 after:size-5 after:rounded-full after:transition after:content-[""] ${
+                    type.on
+                      ? 'bg-neon after:translate-x-4.5 after:bg-ink'
+                      : 'bg-surface-hover ring-1 ring-white/16 ring-inset after:bg-zinc-400'
+                  }`}
+                />
+              </li>
+            ))}
+          </ul>
+        )}
+        {settings !== null && (
+          <p className="text-[13px] text-zinc-400">
+            {settings.devices
+              ? `Obavještenja za tvoj nalog stižu na ${settings.devices} ${settings.devices === 1 ? 'uređaj' : 'uređaja'}.`
+              : 'Nijedan tvoj uređaj još ne prima obavještenja.'}
+          </p>
+        )}
       </div>
     </section>
   )

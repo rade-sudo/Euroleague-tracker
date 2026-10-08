@@ -13,6 +13,8 @@ require __DIR__ . '/tickets.php';
 require __DIR__ . '/draws.php';
 require __DIR__ . '/players.php';
 require __DIR__ . '/schedule.php';
+require __DIR__ . '/push.php';
+require __DIR__ . '/notifications.php';
 require __DIR__ . '/stats.php';
 require __DIR__ . '/account.php';
 require __DIR__ . '/backups.php';
@@ -80,6 +82,19 @@ function syncSafely(PDO $db): void
 {
     try {
         syncEuroleague($db);
+        dispatchNotificationsThrottled($db);
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        error_log((string) $e);
+    }
+}
+
+function notifySafely(PDO $db): void
+{
+    try {
+        dispatchNotifications($db);
     } catch (Throwable $e) {
         if ($db->inTransaction()) {
             $db->rollBack();
@@ -159,7 +174,8 @@ if ($route === '/me' && $method === 'GET') {
 // Svako smije mijenjati svoj tiket; sve ostale izmjene radi samo admin.
 $isTicketEdit = ($method === 'POST' && preg_match('#^/rounds/\d+/picks$#', $route))
     || ($method === 'DELETE' && preg_match('#^/picks/\d+$#', $route));
-$isOwnAccount = $method === 'POST' && $route === '/account/password';
+$isOwnAccount = ($method === 'POST' && in_array($route, ['/account/password', '/push/subscribe', '/push/unsubscribe', '/push/test'], true))
+    || ($method === 'PUT' && $route === '/notifications');
 if ($method !== 'GET' && !$isTicketEdit && !$isOwnAccount && $user['role'] !== 'admin') {
     fail(403, 'Samo admin može mijenjati tabelu.');
 }
@@ -199,6 +215,7 @@ if ($route === '/draw' && $method === 'POST') {
     }
     $friendId = drawIntoSlot($db, $round, $free[0], $user['id']);
     $db->commit();
+    notifySafely($db);
     respond(200, ['drawnFriendId' => $friendId, 'state' => drawState($db)]);
 }
 
@@ -215,6 +232,7 @@ if ($route === '/draw/replace' && $method === 'POST') {
     }
     $friendId = drawIntoSlot($db, $round, $slot, $user['id']);
     $db->commit();
+    notifySafely($db);
     respond(200, ['drawnFriendId' => $friendId, 'state' => drawState($db)]);
 }
 
@@ -296,6 +314,33 @@ if (preg_match('#^/rounds/(\d+)/picks$#', $route, $m) && $method === 'POST') {
         throw $e;
     }
     respond(201, loadPick($db, (int) $db->lastInsertId()));
+}
+
+if ($route === '/notifications' && $method === 'GET') {
+    respond(200, notificationSettings($db, $user));
+}
+
+if ($route === '/notifications' && $method === 'PUT') {
+    saveNotificationSettings($db, $user, readJson()['off'] ?? []);
+    respond(200, notificationSettings($db, $user));
+}
+
+if ($route === '/push/subscribe' && $method === 'POST') {
+    savePushSubscription($db, $user, readJson());
+    respond(200, notificationSettings($db, $user));
+}
+
+if ($route === '/push/unsubscribe' && $method === 'POST') {
+    deletePushSubscription($db, $user, readJson()['endpoint'] ?? '');
+    respond(200, notificationSettings($db, $user));
+}
+
+if ($route === '/push/test' && $method === 'POST') {
+    $sent = sendTestNotification($db, $user);
+    if ($sent === 0) {
+        fail(502, 'Probno obavještenje nije poslato. Isključi pa ponovo uključi obavještenja na ovom uređaju.');
+    }
+    respond(200, ['sent' => $sent]);
 }
 
 if ($route === '/account' && $method === 'GET') {
@@ -479,6 +524,7 @@ if ($route === '/rounds' && $method === 'POST') {
     $db->prepare('INSERT INTO rounds (number) VALUES (?)')->execute([$number]);
     $id = (int) $db->lastInsertId();
     $db->commit();
+    notifySafely($db);
     respond(201, findRound($db, $id));
 }
 

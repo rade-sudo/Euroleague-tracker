@@ -1,3 +1,5 @@
+import { forgetPushDevice } from './pwa.js'
+
 export const LOGIN_PATH = '/prijava'
 
 export class ApiError extends Error {
@@ -9,6 +11,8 @@ export class ApiError extends Error {
 
 export async function logout() {
   try {
+    // Telefon prestaje primati obavještenja ovog naloga; dozvola ostaje za sljedeću prijavu.
+    await forgetPushDevice().catch(() => {})
     await api('/logout', { method: 'POST' })
   } finally {
     window.location.replace(LOGIN_PATH)

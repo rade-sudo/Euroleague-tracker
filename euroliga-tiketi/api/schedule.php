@@ -6,7 +6,8 @@ declare(strict_types=1);
 const EUROLEAGUE_GAMES_URL = 'https://api-live.euroleague.net/v2/competitions/E/seasons/%s/games';
 const EUROLEAGUE_BOXSCORE_URL = 'https://api-live.euroleague.net/v3/competitions/E/seasons/%s/games/%d/stats';
 const SCHEDULE_REFRESH_MINUTES = 360;
-const RESULTS_CHECK_MINUTES = 5;
+// Malo manje od 5 minuta, da cron na 5 minuta ne preskoči svaku drugu provjeru.
+const RESULTS_CHECK_MINUTES = 4.5;
 // Prije ovoga utakmica sigurno nije gotova, pa nema smisla pitati za rezultat.
 const GAME_LENGTH_MINUTES = 105;
 const LOCK_MINUTES_BEFORE_GAME = 30;
