@@ -16,30 +16,45 @@ export default function PlayerInput({
   emptyText = 'Nema na spisku. Biće sačuvan kako je upisan.',
   // Ko je već izabrao igrača u ovom kolu (id igrača → ime), da se ne bira dvaput.
   takenBy = () => null,
+  // Igrač koji nije u ponudi Maxbeta: siv je i ne može se izabrati.
+  unavailable = () => false,
 }) {
   const listId = useId()
   const [open, setOpen] = useState(false)
   const [highlight, setHighlight] = useState(0)
   const results = index && open && !selected ? searchPlayers(index, value) : []
   const showList = open && !selected && value.trim().length >= 2
+  const choosable = (player) => !unavailable(player.id)
+
+  // Sljedeći red koji se može izabrati, od reda "from" u smjeru "dir"; -1 ako ga nema.
+  function nextChoosable(from, dir) {
+    const n = results.length
+    for (let i = 0; i < n; i++) {
+      const k = (((from + dir * i) % n) + n) % n
+      if (choosable(results[k])) return k
+    }
+    return -1
+  }
+  const active = results.length ? nextChoosable(Math.min(highlight, results.length - 1), 1) : -1
 
   function choose(player) {
+    if (!choosable(player)) return
     onChange(player.name)
     onSelect(player)
     setOpen(false)
   }
 
   function handleKeyDown(event) {
-    if (!showList || !results.length) return
+    if (!showList || active < 0) return
     if (event.key === 'ArrowDown') {
       event.preventDefault()
-      setHighlight((current) => (current + 1) % results.length)
+      setHighlight(nextChoosable(active + 1, 1))
     } else if (event.key === 'ArrowUp') {
       event.preventDefault()
-      setHighlight((current) => (current - 1 + results.length) % results.length)
+      setHighlight(nextChoosable(active - 1, -1))
     } else if (event.key === 'Enter') {
       event.preventDefault()
-      choose(results[Math.min(highlight, results.length - 1)])
+      choose(results[active])
     } else if (event.key === 'Escape') {
       setOpen(false)
     }
@@ -64,7 +79,7 @@ export default function PlayerInput({
         aria-controls={listId}
         aria-autocomplete="list"
         aria-label={ariaLabel}
-        aria-activedescendant={showList && results.length ? `${listId}-${highlight}` : undefined}
+        aria-activedescendant={showList && active >= 0 ? `${listId}-${active}` : undefined}
         maxLength={40}
         placeholder={placeholder}
         autoComplete="off"
@@ -82,32 +97,42 @@ export default function PlayerInput({
           className="absolute top-full right-0 left-0 z-30 mt-1 overflow-hidden rounded-[10px] bg-surface-2 py-1 shadow-[0_18px_40px_-12px_rgba(0,0,0,0.9)] ring-1 ring-white/12"
         >
           {results.length ? (
-            results.map((player, index) => (
-              <li
-                key={player.id}
-                id={`${listId}-${index}`}
-                role="option"
-                aria-selected={index === highlight}
-                onMouseDown={(event) => {
-                  event.preventDefault()
-                  choose(player)
-                }}
-                onMouseEnter={() => setHighlight(index)}
-                className={`flex cursor-pointer items-baseline justify-between gap-3 px-3 py-2 text-sm ${
-                  index === highlight ? 'bg-white/6' : ''
-                }`}
-              >
-                <span className={`truncate font-semibold ${takenBy(player.id) ? 'text-zinc-500' : 'text-white'}`}>{player.name}</span>
-                {takenBy(player.id) ? (
-                  <span className="shrink-0 text-xs font-semibold text-accent">već izabran · {takenBy(player.id)}</span>
-                ) : (
-                  <span className={`shrink-0 text-xs ${player.active ? 'text-zinc-500' : 'text-zinc-600'}`}>
-                    {player.club ?? ''}
-                    {player.active ? '' : ' · ranije'}
+            results.map((player, index) => {
+              const off = !choosable(player)
+              const taken = takenBy(player.id)
+              return (
+                <li
+                  key={player.id}
+                  id={`${listId}-${index}`}
+                  role="option"
+                  aria-selected={index === active}
+                  aria-disabled={off || undefined}
+                  title={off ? 'Maxbet nema granicu za njega u ovom kolu' : undefined}
+                  onMouseDown={(event) => {
+                    event.preventDefault()
+                    choose(player)
+                  }}
+                  onMouseEnter={() => !off && setHighlight(index)}
+                  className={`flex items-baseline justify-between gap-3 px-3 py-2 text-sm ${
+                    off ? 'cursor-not-allowed' : 'cursor-pointer'
+                  } ${index === active ? 'bg-white/6' : ''}`}
+                >
+                  <span className={`truncate ${off ? 'font-medium text-zinc-500' : taken ? 'font-semibold text-zinc-500' : 'font-semibold text-white'}`}>
+                    {player.name}
                   </span>
-                )}
-              </li>
-            ))
+                  {off ? (
+                    <span className="shrink-0 text-xs text-zinc-500 italic">nije u ponudi Maxbeta</span>
+                  ) : taken ? (
+                    <span className="shrink-0 text-xs font-semibold text-accent">već izabran · {taken}</span>
+                  ) : (
+                    <span className={`shrink-0 text-xs ${player.active ? 'text-zinc-500' : 'text-zinc-600'}`}>
+                      {player.club ?? ''}
+                      {player.active ? '' : ' · ranije'}
+                    </span>
+                  )}
+                </li>
+              )
+            })
           ) : (
             <li className="px-3 py-2 text-[13px] text-zinc-500">
               {emptyText}

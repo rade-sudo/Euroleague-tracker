@@ -16,10 +16,14 @@ const SORTS = [
 ]
 const SORT_FNS = {
   proj: (a, b) => b.proj.pts.value - a.proj.pts.value,
-  chance: (a, b) => b.chance.pct - a.chance.pct,
+  // Ko nije u ponudi Maxbeta nema šansu: ide na kraj.
+  chance: (a, b) => b.offered - a.offered || b.chance.pct - a.chance.pct,
   form: (a, b) => b.formPct - a.formPct,
 }
 const BEST_COUNT = 5
+
+// 1 granica, 2 granice, 5 granica, 21 granica.
+const linesWord = (n) => (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14) ? 'granice' : 'granica')
 
 const cardClass =
   'min-w-0 overflow-hidden rounded-[14px] bg-surface shadow-[inset_0_0_0_1px_rgba(255,255,255,0.08),0_30px_60px_-30px_rgba(0,0,0,0.8)] before:block before:h-px before:bg-linear-to-r before:from-transparent before:via-accent/70 before:to-transparent before:content-[""]'
@@ -126,7 +130,10 @@ export default function FormaPage() {
     })
     setData((current) => ({
       ...current,
-      players: current.players.map((player) => (player.id === playerId ? { ...player, line: result.line } : player)),
+      // U utakmici sa uvezenim Maxbetom igrač bez granice nije u ponudi.
+      players: current.players.map((player) =>
+        player.id === playerId ? { ...player, line: result.line, offer: player.offer === null ? null : result.line !== null } : player,
+      ),
     }))
   }
 
@@ -261,6 +268,15 @@ function FormaContent({ data, players, onImport, view, onView, onJump, openedAt,
                   {gameDay(g)} · {gameTime(g)}
                   {g.played ? ' · odigrano' : ''}
                 </small>
+                {!g.played && (
+                  <span
+                    className={`self-start rounded-[5px] px-1.5 py-px font-display text-[10.5px] font-bold tracking-widest uppercase ${
+                      g.offer === null ? 'bg-white/4 text-zinc-500' : 'bg-gold/10 text-gold'
+                    }`}
+                  >
+                    {g.offer === null ? 'Čeka Maxbet' : `Maxbet · ${g.offer} ${linesWord(g.offer)}`}
+                  </span>
+                )}
               </button>
             ))}
           </div>
@@ -318,8 +334,8 @@ function BestPicks({ players, games, gameOfTeam, onJump, now, onImport }) {
   // Samo utakmice koje još nisu počele; za odigrano kolo sve.
   const upcoming = new Set(games.filter((g) => !g.played && new Date(g.startsAt).getTime() > now).map((g) => g.id))
   const pool = (upcoming.size ? players.filter((p) => upcoming.has(gameOfTeam.get(p.team)?.id)) : players)
-    // Ko nije igrao zadnju utakmicu tima (povreda, odmor) ne nudi se za tiket.
-    .filter((p) => p.last10[0] && !p.last10[0].dnp)
+    // Ne nudi se ko nije u ponudi Maxbeta, ni ko nije igrao zadnju utakmicu tima (povreda, odmor).
+    .filter((p) => p.offered && p.last10[0] && !p.last10[0].dnp)
   const best = [...pool].sort((a, b) => b.chance.pct - a.chance.pct).slice(0, BEST_COUNT)
   if (!best.length) return null
 

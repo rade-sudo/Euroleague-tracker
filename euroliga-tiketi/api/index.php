@@ -217,6 +217,8 @@ if (preg_match('#^/rounds/(\d+)/tickets$#', $route, $m) && $method === 'GET') {
         // Izvučeni iz bubnja: ko bira 2 igrača i za koji dan.
         'twoPicks' => roundTwoPicks($db, (int) $round['id']),
         'schedule' => $schedule,
+        // Igrači koji nisu u ponudi Maxbeta (uvoz je donio granice za njihovu utakmicu, a njih nema).
+        'unavailable' => array_keys(formaUnavailable($db, (int) $round['number'])),
         // Tiket 1 i 2 po danu; drugari vide samo uplaćene.
         'slips' => roundSlips($db, (int) $round['id'], $user['role'] === 'admin'),
         'stakePerPlayer' => STAKE_PER_PLAYER,
@@ -347,6 +349,13 @@ if (preg_match('#^/rounds/(\d+)/picks$#', $route, $m) && $method === 'POST') {
             fail(422, "Ne prepoznajem igrača „{$player}“. Izaberi ga sa spiska ispod polja.");
         }
         $gameId = gameForPick($db, $schedule, $catalogPlayer, (int) $round['number'], $isAdmin);
+        // Kad je Maxbet uvezen za utakmicu, igrač bez granice nije u ponudi (ni za admina: prvo upiše granicu u Formi).
+        if (!formaIsOffered($db, (int) $round['number'], $catalogPlayer['id'], $gameId)) {
+            $stmt = $db->prepare('SELECT home_code, away_code FROM games WHERE id = ?');
+            $stmt->execute([$gameId]);
+            $game = $stmt->fetch();
+            fail(422, "{$player} nije u ponudi Maxbeta za utakmicu {$game['home_code']} – {$game['away_code']}. Izaberi drugog igrača.");
+        }
     }
     $duplicate = duplicatePick($db, (int) $round['id'], $catalogPlayer['id'] ?? null, $player);
     if ($duplicate !== null) {

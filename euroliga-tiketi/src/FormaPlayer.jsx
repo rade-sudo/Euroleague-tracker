@@ -43,6 +43,18 @@ export function SourceTag({ source }) {
   )
 }
 
+// Maxbet je objavio granice za utakmicu, a ovog igrača nema u ponudi.
+export function NotOfferedTag() {
+  return (
+    <span
+      title="Maxbet nema granicu za njega u ovom kolu, pa se ne može dodati na tiket"
+      className="inline-block rounded-[5px] bg-white/3 px-1.75 py-0.5 font-display text-[11px] font-bold tracking-widest whitespace-nowrap text-zinc-400 uppercase ring-1 ring-white/12 ring-inset"
+    >
+      Nije u ponudi
+    </span>
+  )
+}
+
 // Zadnjih 5: starije lijevo, najnovija desno. Poeni su zeleni/crveni prema granici,
 // asistencije i skokovi prema prosjeku sezone.
 function FormCells({ player, stat, small }) {
@@ -66,7 +78,7 @@ function FormCells({ player, stat, small }) {
         }
         const value = game[stat]
         let tone = 'bg-white/4 text-zinc-300'
-        if (stat === 'pts') tone = value > player.line ? 'bg-neon/10 text-neon' : 'bg-rose-500/10 text-rose-400'
+        if (stat === 'pts' && player.offered) tone = value > player.line ? 'bg-neon/10 text-neon' : 'bg-rose-500/10 text-rose-400'
         else if (value >= ref * 1.2 && value - ref >= 1) tone = 'bg-neon/10 text-neon'
         else if (value <= ref * 0.8 && ref - value >= 1) tone = 'bg-rose-500/10 text-rose-400'
         return (
@@ -86,7 +98,7 @@ function FormCells({ player, stat, small }) {
 function FormColumn({ player, stat, label }) {
   const small = stat !== 'pts'
   return (
-    <div className="col-span-2 flex min-w-0 items-center gap-2 min-[861px]:col-span-1">
+    <div className={`col-span-2 flex min-w-0 items-center gap-2 min-[861px]:col-span-1 ${player.offered ? '' : 'opacity-45'}`}>
       <span className="w-7.5 font-display text-[11px] font-bold tracking-[0.12em] text-zinc-500 min-[861px]:hidden">{label}</span>
       <FormCells player={player} stat={stat} small={small} />
       <span className="min-w-7.5 font-display text-[15px] font-bold text-white tabular-nums">
@@ -111,7 +123,7 @@ export default function FormaPlayer({ player, open, onToggle, opponentName, isAd
           open ? 'bg-surface-2' : ''
         }`}
       >
-        <div className="flex min-w-0 items-center gap-2.5">
+        <div className={`flex min-w-0 items-center gap-2.5 ${player.offered ? '' : 'opacity-45'}`}>
           <span className="grid size-6 shrink-0 place-items-center rounded-md bg-white/5 font-display text-xs font-extrabold text-zinc-400 ring-1 ring-white/12 ring-inset">
             {player.pos}
           </span>
@@ -145,16 +157,26 @@ export default function FormaPlayer({ player, open, onToggle, opponentName, isAd
           )}
         </div>
         <div className="col-start-2 row-start-1 flex flex-col items-end gap-0.75 text-right min-[861px]:col-start-auto min-[861px]:row-start-auto">
-          <b className="font-display text-2xl leading-none font-extrabold text-accent tabular-nums">{fix1(pts.value)}</b>
+          <b
+            className={`font-display leading-none font-extrabold tabular-nums ${
+              player.offered ? 'text-2xl text-accent' : 'text-xl text-zinc-500'
+            }`}
+          >
+            {fix1(pts.value)}
+          </b>
           <span className="text-xs text-zinc-400 tabular-nums">
             <b className="font-semibold text-zinc-300">{fix1(player.proj.ast.value)}</b> as ·{' '}
             <b className="font-semibold text-zinc-300">{fix1(player.proj.reb.value)}</b> sk
           </span>
-          <span className="inline-flex items-center gap-1.25 text-xs text-zinc-400">
-            <SourceTag source={player.lineSrc} /> <b className="text-white tabular-nums">{player.line}</b>
-            <TipChip tip={c.tip} small />
-            <span className={`font-display text-sm font-extrabold tabular-nums ${pctTone(c.pct)}`}>{c.pct}%</span>
-          </span>
+          {player.offered ? (
+            <span className="inline-flex items-center gap-1.25 text-xs text-zinc-400">
+              <SourceTag source={player.lineSrc} /> <b className="text-white tabular-nums">{player.line}</b>
+              <TipChip tip={c.tip} small />
+              <span className={`font-display text-sm font-extrabold tabular-nums ${pctTone(c.pct)}`}>{c.pct}%</span>
+            </span>
+          ) : (
+            <NotOfferedTag />
+          )}
         </div>
       </button>
       {open && <PlayerDetail player={player} opponentName={opponentName} isAdmin={isAdmin} onSaveLine={onSaveLine} />}
@@ -171,7 +193,9 @@ function PointsChart({ player }) {
   const top = 14
   const bottom = 30
   const projection = player.proj.pts.value
-  const maxValue = Math.max(...games.map((g) => g.pts), player.line, projection) + 4
+  // Bez ponude nema granice: stubići su neutralni, bez zlatne linije.
+  const line = player.offered ? player.line : null
+  const maxValue = Math.max(...games.map((g) => g.pts), line ?? 0, projection) + 4
   const yMax = Math.ceil(maxValue / 5) * 5
   const y = (v) => top + (H - top - bottom) * (1 - v / yMax)
   const bw = (W - left - right) / Math.max(games.length, 1)
@@ -205,7 +229,7 @@ function PointsChart({ player }) {
                   width={w}
                   height={y(0) - y(g.pts)}
                   rx="3"
-                  fill={g.pts > player.line ? '#b8ff3c' : '#fb7185'}
+                  fill={line === null ? '#a1a1aa' : g.pts > line ? '#b8ff3c' : '#fb7185'}
                   fillOpacity={recent ? 0.9 : 0.45}
                 />
                 <text x={x + w / 2} y={y(g.pts) - 4} textAnchor="middle" fontSize="10.5" fontWeight="700" fill="#e4e4e7" fontFamily="Barlow Condensed">
@@ -223,7 +247,7 @@ function PointsChart({ player }) {
           </g>
         )
       })}
-      <line x1={left} x2={W - right} y1={y(player.line)} y2={y(player.line)} stroke="#ffc53d" strokeWidth="1.5" strokeDasharray="5 4" />
+      {line !== null && <line x1={left} x2={W - right} y1={y(line)} y2={y(line)} stroke="#ffc53d" strokeWidth="1.5" strokeDasharray="5 4" />}
       <line x1={left} x2={W - right} y1={y(projection)} y2={y(projection)} stroke="#ff6a13" strokeWidth="1.5" strokeDasharray="1.5 3" />
     </svg>
   )
@@ -236,10 +260,8 @@ const emptyClass = 'rounded-lg bg-white/3 px-3 py-2.5 text-[13px] text-zinc-400'
 
 function PlayerDetail({ player, opponentName, isAdmin, onSaveLine }) {
   const pts = player.proj.pts
-  const c = player.chance
   const n = player.h2h.length
   const avg = (key) => fix1(player.h2h.reduce((sum, g) => sum + g[key], 0) / n)
-  const last5 = player.last10.slice(0, 5)
   const h2hHits = hitsOver(player.h2h, player.line)
 
   return (
@@ -255,17 +277,21 @@ function PlayerDetail({ player, opponentName, isAdmin, onSaveLine }) {
           <div className={emptyClass}>Još nema zapisnika njegovih utakmica.</div>
         )}
         <div className="flex flex-wrap gap-x-3.5 gap-y-1 text-[11.5px] text-zinc-400">
-          <span>
-            <i className="mr-1.25 inline-block w-3.5 border-t-2 border-dashed border-gold align-[3px]" />
-            granica {player.line}
-          </span>
+          {player.offered && (
+            <span>
+              <i className="mr-1.25 inline-block w-3.5 border-t-2 border-dashed border-gold align-[3px]" />
+              granica {player.line}
+            </span>
+          )}
           <span>
             <i className="mr-1.25 inline-block w-3.5 border-t-2 border-dotted border-accent align-[3px]" />
             projekcija {fix1(pts.value)}
           </span>
-          <span>
-            <b className="text-neon">■</b> preko · <b className="text-rose-400">■</b> ispod
-          </span>
+          {player.offered && (
+            <span>
+              <b className="text-neon">■</b> preko · <b className="text-rose-400">■</b> ispod
+            </span>
+          )}
         </div>
       </section>
 
@@ -308,13 +334,17 @@ function PlayerDetail({ player, opponentName, isAdmin, onSaveLine }) {
                 </tr>
               </tbody>
             </table>
-            <p className="text-xs leading-relaxed text-zinc-500">
-              Preko granice {player.line} protiv njih:{' '}
-              <b className={h2hHits / n >= 0.5 ? 'text-neon' : 'text-rose-400'}>
-                {h2hHits}/{n}
-              </b>
-              {n < 3 ? ' · malo utakmica, projekcija ovome daje manju težinu' : ''}
-            </p>
+            {player.offered ? (
+              <p className="text-xs leading-relaxed text-zinc-500">
+                Preko granice {player.line} protiv njih:{' '}
+                <b className={h2hHits / n >= 0.5 ? 'text-neon' : 'text-rose-400'}>
+                  {h2hHits}/{n}
+                </b>
+                {n < 3 ? ' · malo utakmica, projekcija ovome daje manju težinu' : ''}
+              </p>
+            ) : (
+              n < 3 && <p className="text-xs leading-relaxed text-zinc-500">Malo utakmica, projekcija ovome daje manju težinu.</p>
+            )}
           </>
         ) : (
           <div className={emptyClass}>
@@ -362,41 +392,67 @@ function PlayerDetail({ player, opponentName, isAdmin, onSaveLine }) {
           </div>
         </div>
 
-        <div className="flex flex-col gap-2 rounded-[10px] bg-surface px-3.5 py-3 ring-1 ring-white/12 ring-inset">
-          <div className="flex items-center justify-between gap-2.5">
-            <span className="flex flex-wrap items-center gap-1.5">
-              <SourceTag source={player.lineSrc} />
-              <b className="font-display text-lg text-white tabular-nums">{player.line}</b> · tip <TipChip tip={c.tip} />
+        {player.offered ? (
+          <Verdict player={player} isAdmin={isAdmin} onSaveLine={onSaveLine} />
+        ) : (
+          <div className="flex flex-col gap-2 rounded-[10px] bg-surface px-3.5 py-3 ring-1 ring-white/12 ring-inset">
+            <span>
+              <NotOfferedTag />
             </span>
-            <b className={`font-display text-[30px] leading-none font-extrabold tabular-nums ${pctTone(c.pct)}`}>{c.pct}%</b>
+            <p className="text-[13px] leading-relaxed text-zinc-400">
+              Maxbet je objavio granice za ovu utakmicu, a njega nema u ponudi. Ne može se dodati na tiket.
+            </p>
+            {isAdmin && <LineEditor key="nema" player={player} onSaveLine={onSaveLine} />}
+            {isAdmin && (
+              <p className="text-xs leading-relaxed text-zinc-500">
+                Ako ga Maxbet doda kasnije, upiši granicu ili ponovi uvoz, pa se može birati. Polje vidi samo admin.
+              </p>
+            )}
           </div>
-          <div className="h-1.5 overflow-hidden rounded-full bg-white/6">
-            <span className={`block h-full rounded-full ${meterTone(c.pct)}`} style={{ width: `${c.pct}%` }} />
-          </div>
-          <div className="flex flex-wrap gap-1.5 text-xs text-zinc-400">
-            <span className="rounded-[5px] bg-white/4 px-1.75 py-0.5">
-              zadnjih 5: <b className="text-white">{(c.tip === '+' ? hitsOver : hitsUnder)(last5, player.line)}/{playedCount(last5)}</b>{' '}
-              {c.tip === '+' ? 'preko' : 'ispod'}
-            </span>
-            <span className="rounded-[5px] bg-white/4 px-1.75 py-0.5">
-              zadnjih {player.last10.length}:{' '}
-              <b className="text-white">
-                {(c.tip === '+' ? hitsOver : hitsUnder)(player.last10, player.line)}/{playedCount(player.last10)}
-              </b>
-            </span>
-            <span className="rounded-[5px] bg-white/4 px-1.75 py-0.5">
-              oscilacija ±<b className="text-white">{fix1(c.sd)}</b>
-            </span>
-          </div>
-          {isAdmin && <LineEditor key={player.line} player={player} onSaveLine={onSaveLine} />}
-          <p className="text-xs leading-relaxed text-zinc-500">
-            {player.lineSrc === 'maxbet'
-              ? 'Granica sa Maxbeta, upisao admin. Igrač je dobija i na tiketu.'
-              : 'Procjena iz sezone i forme. Kad izađe Maxbet, admin upisuje pravu granicu.'}
-            {isAdmin ? ' Polje vidi samo admin.' : ''}
-          </p>
-        </div>
+        )}
       </section>
+    </div>
+  )
+}
+
+// Granica, tip i šansa igrača koji je u ponudi (ili čeka Maxbet, sa procjenom).
+function Verdict({ player, isAdmin, onSaveLine }) {
+  const c = player.chance
+  const last5 = player.last10.slice(0, 5)
+  return (
+    <div className="flex flex-col gap-2 rounded-[10px] bg-surface px-3.5 py-3 ring-1 ring-white/12 ring-inset">
+      <div className="flex items-center justify-between gap-2.5">
+        <span className="flex flex-wrap items-center gap-1.5">
+          <SourceTag source={player.lineSrc} />
+          <b className="font-display text-lg text-white tabular-nums">{player.line}</b> · tip <TipChip tip={c.tip} />
+        </span>
+        <b className={`font-display text-[30px] leading-none font-extrabold tabular-nums ${pctTone(c.pct)}`}>{c.pct}%</b>
+      </div>
+      <div className="h-1.5 overflow-hidden rounded-full bg-white/6">
+        <span className={`block h-full rounded-full ${meterTone(c.pct)}`} style={{ width: `${c.pct}%` }} />
+      </div>
+      <div className="flex flex-wrap gap-1.5 text-xs text-zinc-400">
+        <span className="rounded-[5px] bg-white/4 px-1.75 py-0.5">
+          zadnjih 5: <b className="text-white">{(c.tip === '+' ? hitsOver : hitsUnder)(last5, player.line)}/{playedCount(last5)}</b>{' '}
+          {c.tip === '+' ? 'preko' : 'ispod'}
+        </span>
+        <span className="rounded-[5px] bg-white/4 px-1.75 py-0.5">
+          zadnjih {player.last10.length}:{' '}
+          <b className="text-white">
+            {(c.tip === '+' ? hitsOver : hitsUnder)(player.last10, player.line)}/{playedCount(player.last10)}
+          </b>
+        </span>
+        <span className="rounded-[5px] bg-white/4 px-1.75 py-0.5">
+          oscilacija ±<b className="text-white">{fix1(c.sd)}</b>
+        </span>
+      </div>
+      {isAdmin && <LineEditor key={player.line} player={player} onSaveLine={onSaveLine} />}
+      <p className="text-xs leading-relaxed text-zinc-500">
+        {player.lineSrc === 'maxbet'
+          ? 'Granica sa Maxbeta, upisao admin. Igrač je dobija i na tiketu.'
+          : 'Procjena iz sezone i forme. Kad izađe Maxbet, admin upisuje pravu granicu.'}
+        {isAdmin ? ' Polje vidi samo admin.' : ''}
+      </p>
     </div>
   )
 }
@@ -453,7 +509,8 @@ function LineEditor({ player, onSaveLine }) {
             onClick={() => save(null)}
             className="h-8 rounded-[7px] px-3 font-display text-[13px] font-bold tracking-[0.08em] text-zinc-400 uppercase ring-1 ring-white/12 ring-inset transition hover:text-white disabled:opacity-60"
           >
-            Vrati procjenu {player.est}
+            {/* Utakmica sa uvezenim Maxbetom: bez granice igrač prelazi u "nije u ponudi". */}
+            {player.offer === true ? 'Ukloni granicu' : `Vrati procjenu ${player.est}`}
           </button>
         )}
       </form>

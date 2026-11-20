@@ -24,7 +24,7 @@ const gameWhen = (game) => {
   const d = new Date(`${game.startsAt.slice(0, 10)}T00:00`)
   return `${capitalize(DAY_SHORT[d.getDay()])} ${d.getDate()}. ${MONTHS_SHORT[d.getMonth()]} · ${game.startsAt.slice(11, 16)}`
 }
-const playersWord = (n) => (n % 10 === 1 && n % 100 !== 11 ? 'igrača' : 'igrača')
+const playersWord = (n) => (n % 10 === 1 && n % 100 !== 11 ? 'igrač' : 'igrača')
 
 // Pregled granica pročitanih sa Maxbeta (dugme „Granice → Forma“) i čuvanje svih odjednom.
 // Bez redova prikazuje samo uputstvo i dugme za trake sa oznakama.
@@ -115,7 +115,11 @@ export default function FormaImport({ data, players, maxbetRows, onClose, onSave
           {save.done && (
             <div className="flex flex-wrap items-center gap-x-4 gap-y-2.5 border-b border-neon/25 bg-neon/7 px-4.5 py-3.5">
               <span>
-                <b className="text-neon">Sačuvano {save.done.saved} granica.</b>{' '}
+                <b className="text-neon">
+                  Sačuvano {save.done.saved} granica
+                  {save.done.games ? ` · ${save.done.games} ${save.done.games === 1 ? 'utakmica' : 'utakmice'}` : ''}
+                  {save.done.out ? ` · ${save.done.out} ${playersWord(save.done.out)} nije u ponudi` : ''}.
+                </b>{' '}
                 {save.done.tickets ? `${save.done.tickets} igrača na tiketima kola ${data.round} ima novu granicu.` : ''}
               </span>
               <button type="button" onClick={onClose} className="text-[13px] text-zinc-400 transition hover:text-white">

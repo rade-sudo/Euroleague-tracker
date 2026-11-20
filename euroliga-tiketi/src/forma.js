@@ -106,6 +106,9 @@ export function enrichPlayer(player, defense, doubleTeams) {
     reb: project(player, 'reb', defense),
   }
   const est = estimateLine(player, proj.pts.form)
+  // offer === false: Maxbet je uvezen za utakmicu, a igrača nema u ponudi.
+  // Tada se granica i šansa ne prikazuju (računaju se iz procjene samo za ekran uvoza).
+  const offered = player.offer !== false
   const line = player.line ?? est
   const sd = pointsSd(player)
   const last5 = player.last10.slice(0, 5)
@@ -126,7 +129,8 @@ export function enrichPlayer(player, defense, doubleTeams) {
     proj,
     est,
     line,
-    lineSrc: player.line === null ? 'procjena' : 'maxbet',
+    offered,
+    lineSrc: player.line !== null ? 'maxbet' : offered ? 'procjena' : 'nema',
     chance: chance(line, proj.pts.value, sd),
     formPct: player.season.pts > 0 ? proj.pts.form / player.season.pts - 1 : 0,
     flags,

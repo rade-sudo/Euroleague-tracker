@@ -250,6 +250,8 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
           list: data.tickets,
           twoPicks: data.twoPicks ?? [],
           schedule: data.schedule ?? [],
+          // Nisu u ponudi Maxbeta: ne mogu se izabrati, a upisani dobijaju upozorenje.
+          unavailable: new Set(data.unavailable ?? []),
           autoGrade: Boolean(data.autoGrade),
           players: data.players ?? {},
           slips: data.slips ?? [],
@@ -744,7 +746,13 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
                               <TicketDayHeader day={group.day} twoPicks={twoPicksOn(ticketFriendId, group.day.date)} />
                             )}
                             {group.picks.map(({ pick, index }) => (
-                              <PickRow key={pick.id} index={index} pick={pick} game={games.get(pick.gameId)}>
+                              <PickRow
+                                key={pick.id}
+                                index={index}
+                                pick={pick}
+                                game={games.get(pick.gameId)}
+                                notOffered={!group.day?.locked && tickets.unavailable.has(pick.playerId)}
+                              >
                                 {(!group.day?.locked || isAdmin) && (
                                   <button
                                     type="button"
@@ -792,6 +800,7 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
                           const [first, last] = friendName(pick.friendId).split(/\s+/)
                           return last ? `${first} ${last[0]}.` : first
                         }}
+                        unavailable={(playerId) => tickets.unavailable.has(playerId)}
                         emptyText={
                           scheduled
                             ? 'Nema na spisku. Provjeri kako se piše, ili javi adminu da osvježi spisak.'
@@ -1117,9 +1126,13 @@ function TicketAvatar({ name, isMe = false }) {
 }
 
 // Red na tvom tiketu: igrač, ispod tip, ispod utakmica i vrijeme.
-function PickRow({ index, pick, game, children }) {
+function PickRow({ index, pick, game, notOffered, children }) {
   return (
-    <div className="grid grid-cols-[28px_minmax(0,1fr)_auto] items-center gap-3 border-b border-dashed border-line px-3.5 py-3 last:border-b-0">
+    <div
+      className={`grid grid-cols-[28px_minmax(0,1fr)_auto] items-center gap-3 border-b border-dashed border-line px-3.5 py-3 last:border-b-0 ${
+        notOffered ? 'bg-rose-500/5' : ''
+      }`}
+    >
       <span className="font-display text-[15px] font-bold tabular-nums text-zinc-600">{index + 1}</span>
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-x-1.5 font-semibold wrap-anywhere text-white">
@@ -1134,6 +1147,9 @@ function PickRow({ index, pick, game, children }) {
               {game.game.home} – {game.game.away} · {shortDay(game.day.date)} u {timeOf(game.game.startsAt)}
             </span>
           </div>
+        )}
+        {notOffered && (
+          <div className="mt-1 text-[12.5px] font-semibold text-rose-400">Nije u ponudi Maxbeta · zamijeni ga do roka</div>
         )}
       </div>
       {children}

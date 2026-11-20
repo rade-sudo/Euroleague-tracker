@@ -304,11 +304,13 @@ function formaPayload(PDO $db, array $user, ?int $roundNumber): array
     $start = [];
     $opponent = [];
     $isHome = [];
+    $teamGameId = [];
     foreach ($games as $game) {
         foreach ([[$game['home_code'], $game['away_code'], true], [$game['away_code'], $game['home_code'], false]] as [$team, $opp, $home]) {
             $start[$team] = $game['starts_at'];
             $opponent[$team] = $opp;
             $isHome[$team] = $home;
+            $teamGameId[$team] = (int) $game['id'];
         }
     }
     $teams = array_keys($start);
@@ -357,6 +359,15 @@ function formaPayload(PDO $db, array $user, ?int $roundNumber): array
     }
 
     $lines = formaRoundLines($db, $season, $roundNumber);
+    // Utakmice sa uvezenim Maxbet granicama i koliko granica ima svaka.
+    $offered = formaOfferedGames($db, $roundNumber);
+    $offerLines = array_fill_keys(array_keys($offered), 0);
+    foreach ($players as $player) {
+        $gameId = $teamGameId[$player['club_code']];
+        if (isset($offered[$gameId], $lines[(int) $player['id']])) {
+            $offerLines[$gameId]++;
+        }
+    }
     $out = [];
     foreach ($players as $player) {
         $team = $player['club_code'];
@@ -418,6 +429,8 @@ function formaPayload(PDO $db, array $user, ?int $roundNumber): array
             'opp' => $opponent[$team],
             'home' => $isHome[$team],
             'line' => $lines[(int) $player['id']] ?? null,
+            // null: Maxbet još nije uvezen za utakmicu; false: utakmica jeste, igrač nije u ponudi.
+            'offer' => isset($offered[$teamGameId[$team]]) ? isset($lines[(int) $player['id']]) : null,
             'season' => [
                 'gp' => $gp,
                 'pts' => $avg('points'),
@@ -440,6 +453,8 @@ function formaPayload(PDO $db, array $user, ?int $roundNumber): array
             'away' => $game['away_code'],
             'awayName' => $game['away_name'],
             'played' => (bool) $game['played'],
+            // Broj Maxbet granica; null dok uvoz ne donese nijednu za ovu utakmicu.
+            'offer' => $offerLines[(int) $game['id']] ?? null,
         ], $games),
         'players' => $out,
         'defense' => (object) ($games ? formaDefense($db, $season, min(array_column($games, 'starts_at'))) : []),
@@ -560,6 +575,62 @@ function formaSaveLine(PDO $db, array $body): array
     }
     $db->commit();
     return ['playerId' => $player['id'], 'line' => $line === null ? null : (float) $line];
+}
+
+/* ---------- Ponuda Maxbeta ---------- */
+
+// Utakmice kola za koje je uvoz sa Maxbeta donio granice: [gameId => true].
+// Prazno i dok migracija 015 nije pokrenuta, pa sve radi kao prije.
+function formaOfferedGames(PDO $db, int $round): array
+{
+    try {
+        $stmt = $db->prepare('SELECT game_id FROM forma_offers WHERE season = ? AND round = ?');
+        $stmt->execute([currentSeasonCode(), $round]);
+        return array_fill_keys(array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN)), true);
+    } catch (PDOException $e) {
+        error_log($e->getMessage());
+        return [];
+    }
+}
+
+// Igrači koji nisu u ponudi: iz utakmice sa uvezenim granicama, a bez granice. [playerId => gameId].
+function formaUnavailable(PDO $db, int $round): array
+{
+    $offered = formaOfferedGames($db, $round);
+    if (!$offered) {
+        return [];
+    }
+    $ids = array_keys($offered);
+    $stmt = $db->prepare('SELECT id, home_code, away_code FROM games WHERE id IN (' . formaPlaceholders($ids) . ')');
+    $stmt->execute($ids);
+    $teamGame = [];
+    foreach ($stmt as $game) {
+        $teamGame[$game['home_code']] = (int) $game['id'];
+        $teamGame[$game['away_code']] = (int) $game['id'];
+    }
+    if (!$teamGame) {
+        return [];
+    }
+    $teams = array_keys($teamGame);
+    $stmt = $db->prepare('SELECT id, club_code FROM players WHERE active = 1 AND club_code IN (' . formaPlaceholders($teams) . ')');
+    $stmt->execute($teams);
+    $lines = formaRoundLines($db, currentSeasonCode(), $round);
+    $out = [];
+    foreach ($stmt as $player) {
+        if (!isset($lines[(int) $player['id']])) {
+            $out[(int) $player['id']] = $teamGame[$player['club_code']];
+        }
+    }
+    return $out;
+}
+
+// Da li se igrač može dodati na tiket: jeste dok Maxbet nije uvezen za njegovu utakmicu, ili ako ima granicu.
+function formaIsOffered(PDO $db, int $round, int $playerId, ?int $gameId): bool
+{
+    if ($gameId === null || !isset(formaOfferedGames($db, $round)[$gameId])) {
+        return true;
+    }
+    return isset(formaRoundLines($db, currentSeasonCode(), $round)[$playerId]);
 }
 
 /* ---------- Uvoz sa Maxbeta ---------- */
@@ -696,11 +767,21 @@ function formaSaveImport(PDO $db, array $body): array
     $schedule = roundSchedule($db, $round);
     $aliasExists = $db->prepare('SELECT 1 FROM player_aliases WHERE normalized = ?');
     $aliasInsert = $db->prepare('INSERT INTO player_aliases (player_id, alias, normalized, created_at) VALUES (?, ?, ?, ?)');
+    $season = currentSeasonCode();
+    $stmt = $db->prepare('SELECT id, home_code, away_code FROM games WHERE season = ? AND round = ?');
+    $stmt->execute([$season, $round]);
+    $teamGame = [];
+    foreach ($stmt as $game) {
+        $teamGame[$game['home_code']] = (int) $game['id'];
+        $teamGame[$game['away_code']] = (int) $game['id'];
+    }
+    $clubOf = $db->prepare('SELECT club_code FROM players WHERE id = ?');
 
     $db->beginTransaction();
     $saved = 0;
     $tickets = 0;
     $changedRounds = [];
+    $games = [];
     foreach ($items as $item) {
         $player = findPlayerById($db, $item['playerId'] ?? null);
         $line = parseLine($item['line'] ?? null);
@@ -709,6 +790,11 @@ function formaSaveImport(PDO $db, array $body): array
         }
         $tickets += formaApplyLine($db, $round, $player['id'], $line, $picks[$player['id']] ?? [], $schedule, $changedRounds);
         $saved++;
+        $clubOf->execute([$player['id']]);
+        $gameId = $teamGame[$clubOf->fetchColumn()] ?? null;
+        if ($gameId !== null) {
+            $games[$gameId] = true;
+        }
         $alias = mb_substr(normalizeName($item['alias'] ?? ''), 0, 60);
         $normalized = normalizePlayerName($alias);
         if ($normalized !== '') {
@@ -718,11 +804,28 @@ function formaSaveImport(PDO $db, array $body): array
             }
         }
     }
+    // Utakmice sa bar jednom granicom ulaze u ponudu: ostali igrači iz njih nisu u ponudi.
+    try {
+        $offer = $db->prepare(
+            'INSERT INTO forma_offers (game_id, season, round, imported_at) VALUES (?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE imported_at = VALUES(imported_at)'
+        );
+        foreach (array_keys($games) as $gameId) {
+            $offer->execute([$gameId, $season, $round, date('Y-m-d H:i:s')]);
+        }
+    } catch (PDOException $e) {
+        $db->rollBack();
+        if ($e->getCode() === '42S02') {
+            fail(503, 'Pokreni api/migrations/015_maxbet_ponuda.sql nad bazom, pa sačuvaj ponovo.');
+        }
+        throw $e;
+    }
     foreach (array_keys($changedRounds) as $roundId) {
         autoGradeRound($db, $roundId);
     }
     $db->commit();
-    return ['saved' => $saved, 'tickets' => $tickets];
+    $out = array_filter(formaUnavailable($db, $round), fn (int $gameId) => isset($games[$gameId]));
+    return ['saved' => $saved, 'tickets' => $tickets, 'games' => count($games), 'out' => count($out)];
 }
 
 function handleFormaRoute(PDO $db, array $user, string $method, string $route): void
