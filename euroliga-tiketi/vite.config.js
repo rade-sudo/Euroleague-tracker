@@ -7,6 +7,8 @@ import { defineConfig } from 'vite'
 
 // Poslije builda dist/ sadrži sve što ide na server: aplikaciju, .htaccess i PHP API.
 // config.local.php (lozinka baze) se nikad ne kopira; na serveru se pravi ručno.
+// FANTASY ISKLJUČEN dok ne ide live: ni fantasy.php ne ide na server.
+const NOT_DEPLOYED = ['config.local.php', 'fantasy.php']
 function copyApi() {
   return {
     name: 'copy-api',
@@ -14,7 +16,7 @@ function copyApi() {
     closeBundle() {
       cpSync('api', 'dist/api', {
         recursive: true,
-        filter: (source) => basename(source) !== 'config.local.php',
+        filter: (source) => !NOT_DEPLOYED.includes(basename(source)),
       })
     },
   }

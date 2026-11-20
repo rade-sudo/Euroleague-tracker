@@ -12,6 +12,12 @@ const RESULTS_CHECK_MINUTES = 4.5;
 const GAME_LENGTH_MINUTES = 105;
 const LOCK_MINUTES_BEFORE_GAME = 30;
 const MIN_GAMES_PER_TICKET_DAY = 2;
+// Tok utakmice (play-by-play), za prve poene na meču. Radi i dok utakmica traje.
+const EUROLEAGUE_PLAY_BY_PLAY_URL = 'https://live.euroleague.net/api/PlayByPlay?gamecode=%d&seasoncode=%s';
+const SCORING_PLAYS = ['2FGM', '3FGM', 'FTM'];
+const QUARTERS = ['FirstQuarter', 'SecondQuarter', 'ThirdQuarter', 'ForthQuarter', 'ExtraTime'];
+const FIRST_SCORER_CHECK_MINUTES = 2;
+const FIRST_SCORER_GAMES_PER_RUN = 10;
 const DAY_ACCUSATIVE = ['nedjelju', 'ponedjeljak', 'utorak', 'srijedu', 'četvrtak', 'petak', 'subotu'];
 
 function minutesSince(PDO $db, string $setting): float
@@ -112,14 +118,32 @@ function roundSchedule(PDO $db, int $number): array
         ];
     }
 
+    // Admin može zaključati dan prije roka ili ga otključati posle roka (day_locks).
+    $stmt = $db->prepare(
+        "SELECT DATE_FORMAT(dl.day, '%Y-%m-%d') AS day, dl.locked FROM day_locks dl
+         JOIN rounds r ON r.id = dl.round_id WHERE r.number = ?"
+    );
+    $stmt->execute([$number]);
+    $overrides = array_map(fn ($locked) => (bool) $locked, $stmt->fetchAll(PDO::FETCH_KEY_PAIR));
+
     $now = time();
     foreach ($days as &$day) {
         $deadline = strtotime($day['games'][0]['startsAt']) - LOCK_MINUTES_BEFORE_GAME * 60;
+        $override = $overrides[$day['date']] ?? null;
         $day['ticket'] = count($day['games']) >= MIN_GAMES_PER_TICKET_DAY;
         $day['deadline'] = $day['ticket'] ? date('Y-m-d\TH:i', $deadline) : null;
-        $day['locked'] = $day['ticket'] && $now >= $deadline;
+        $day['locked'] = $day['ticket'] && ($override ?? $now >= $deadline);
+        // true: zaključao admin, false: otključao admin, null: automatski po roku.
+        $day['manual'] = $day['ticket'] ? $override : null;
     }
     return array_values($days);
+}
+
+// "Tiket za četvrtak je zaključan u 17:30, …"; kad ga je admin zaključao ranije, bez vremena.
+function dayLockedMessage(array $day): string
+{
+    $when = $day['manual'] ? '' : ' u ' . substr($day['deadline'], 11);
+    return 'Tiket za ' . dayAccusative($day['date']) . " je zaključan{$when}, igrači za taj dan se više ne mogu mijenjati.";
 }
 
 function scheduleDayOfGame(array $schedule, ?int $gameId): ?array
@@ -151,8 +175,7 @@ function gameForPick(PDO $db, array $schedule, array $player, int $roundNumber, 
                     . " ({$game['home']} – {$game['away']}), a tog dana nema tiketa jer je samo jedna utakmica.");
             }
             if ($day['locked'] && !$isAdmin) {
-                fail(409, 'Tiket za ' . dayAccusative($day['date']) . ' je zaključan u ' . substr($day['deadline'], 11)
-                    . ', igrači za taj dan se više ne mogu mijenjati.');
+                fail(409, dayLockedMessage($day));
             }
             return $game['id'];
         }
@@ -206,15 +229,75 @@ function fillPickStats(PDO $db, string $season): array
     return array_keys($rounds);
 }
 
+// Šifra igrača koji je dao prve poene (iz igre ili sa linije); '' ako ih još nema, null ako sajt ne odgovara.
+function fetchFirstScorer(string $season, int $gameCode): ?string
+{
+    $data = fetchJson(sprintf(EUROLEAGUE_PLAY_BY_PLAY_URL, $gameCode, $season), 15);
+    if ($data === null) {
+        return null;
+    }
+    foreach (QUARTERS as $quarter) {
+        foreach ((array) ($data[$quarter] ?? []) as $play) {
+            if (in_array(trim((string) ($play['PLAYTYPE'] ?? '')), SCORING_PLAYS, true)) {
+                // "P013285" u toku utakmice je "013285" u spisku igrača.
+                return ltrim(trim((string) ($play['PLAYER_ID'] ?? '')), 'P');
+            }
+        }
+    }
+    return '';
+}
+
+// Igrači sa tiketa dobiju PPM kad je poznat strijelac prvih poena njihove utakmice.
+function markFirstPoints(PDO $db, int $gameId): void
+{
+    $db->prepare(
+        "UPDATE picks p JOIN games g ON g.id = p.game_id LEFT JOIN players pl ON pl.id = p.player_id
+         SET p.first_points = (pl.code IS NOT NULL AND g.first_scorer_code <> '' AND pl.code = g.first_scorer_code)
+         WHERE p.game_id = ?"
+    )->execute([$gameId]);
+}
+
+// Za utakmice sa našim igračima koje su počele: ko je dao prve poene. Utakmica bez podataka
+// posle kraja dobije '' i ne traži se više. Vraća kola u kojima se nešto promijenilo.
+function checkFirstScorers(PDO $db, string $season): array
+{
+    $stmt = $db->prepare(
+        'SELECT DISTINCT g.id, g.game_code, g.played FROM games g JOIN picks p ON p.game_id = g.id
+         WHERE g.season = ? AND g.first_scorer_code IS NULL AND g.starts_at <= ?
+         ORDER BY g.id LIMIT ' . FIRST_SCORER_GAMES_PER_RUN
+    );
+    $stmt->execute([$season, date('Y-m-d H:i:s')]);
+    $update = $db->prepare('UPDATE games SET first_scorer_code = ? WHERE id = ?');
+    $rounds = $db->prepare('SELECT DISTINCT round_id FROM picks WHERE game_id = ?');
+    $changed = [];
+    foreach ($stmt->fetchAll() as $game) {
+        $scorer = fetchFirstScorer($season, (int) $game['game_code']);
+        if ($scorer === null || ($scorer === '' && !$game['played'])) {
+            continue;
+        }
+        $update->execute([$scorer, $game['id']]);
+        markFirstPoints($db, (int) $game['id']);
+        $rounds->execute([$game['id']]);
+        foreach ($rounds->fetchAll(PDO::FETCH_COLUMN) as $roundId) {
+            $changed[(int) $roundId] = true;
+        }
+    }
+    return array_keys($changed);
+}
+
 function isUnderTip(string $tip): bool
 {
     return str_starts_with($tip, '-') || str_starts_with($tip, '−');
 }
 
+// Prvi poeni na meču (Maxbet akcija) = „+“ je odmah prošao, i dok utakmica traje.
 // Nije igrao = prošao. „+“ traži više poena od granice (15.5 → 16), „−“ manje.
 // Bez granice nema ocjene; null znači da se još ne zna.
-function lineVerdict(?string $line, ?int $points, ?bool $didPlay, string $tip): ?bool
+function lineVerdict(?string $line, ?int $points, ?bool $didPlay, string $tip, bool $firstPoints = false): ?bool
 {
+    if ($firstPoints && !isUnderTip($tip)) {
+        return true;
+    }
     if ($didPlay === null) {
         return null;
     }
@@ -243,7 +326,7 @@ function autoGradeRound(PDO $db, int $roundId): void
     }
 
     $stmt = $db->prepare(
-        "SELECT id, friend_id, tip, line, points, did_play, hit FROM picks
+        "SELECT id, friend_id, tip, line, points, did_play, first_points, hit FROM picks
          WHERE round_id = ? AND (graded_by IS NULL OR graded_by = 'auto')"
     );
     $stmt->execute([$roundId]);
@@ -255,6 +338,7 @@ function autoGradeRound(PDO $db, int $roundId): void
             $pick['points'] === null ? null : (int) $pick['points'],
             $pick['did_play'] === null ? null : (bool) $pick['did_play'],
             $pick['tip'],
+            (bool) $pick['first_points'],
         );
         $current = $pick['hit'] === null ? null : (bool) $pick['hit'];
         if ($verdict === $current) {
@@ -270,6 +354,38 @@ function autoGradeRound(PDO $db, int $roundId): void
 
 // Kolo sa rasporedom ide dalje samo: zaključava se rokom posljednjeg dana tiketa,
 // a završava kad su odigrane sve utakmice dana tiketa.
+// Admin zaključava ili otključava dane tiketa ($day null = svi dani kola).
+// Otključan dan se opet sam zaključa u rok; ako je rok prošao, ostaje otključan dok ga admin ne zaključa.
+function setDayLocks(PDO $db, array $round, ?string $day, bool $locked): void
+{
+    if ($round['status'] === 'done') {
+        fail(409, "Kolo {$round['number']} je završeno.");
+    }
+    $days = array_values(array_filter(roundSchedule($db, (int) $round['number']), fn (array $d) => $d['ticket']));
+    if (!$days) {
+        fail(422, 'Kolo nema raspored, zaključava se dugmetom za cijelo kolo.');
+    }
+    if ($day !== null) {
+        $days = array_values(array_filter($days, fn (array $d) => $d['date'] === $day));
+        if (!$days) {
+            fail(422, 'Taj dan nije dan tiketa ovog kola.');
+        }
+    }
+    $upsert = $db->prepare(
+        'INSERT INTO day_locks (round_id, day, locked, created_at) VALUES (?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE locked = VALUES(locked), created_at = VALUES(created_at)'
+    );
+    $delete = $db->prepare('DELETE FROM day_locks WHERE round_id = ? AND day = ?');
+    foreach ($days as $d) {
+        $deadlinePassed = time() >= strtotime($d['deadline']);
+        if ($locked || $deadlinePassed) {
+            $upsert->execute([$round['id'], $d['date'], (int) $locked, date('Y-m-d H:i:s')]);
+        } else {
+            $delete->execute([$round['id'], $d['date']]);
+        }
+    }
+}
+
 function advanceRounds(PDO $db): void
 {
     $update = $db->prepare('UPDATE rounds SET status = ? WHERE id = ?');
@@ -279,8 +395,12 @@ function advanceRounds(PDO $db): void
             continue;
         }
         $status = $round['status'];
-        if ($status === 'open' && !array_filter($days, fn (array $day) => !$day['locked'])) {
+        $anyOpen = (bool) array_filter($days, fn (array $day) => !$day['locked']);
+        if ($status === 'open' && !$anyOpen) {
             $status = 'locked';
+        } elseif ($status === 'locked' && $anyOpen) {
+            // Admin je otključao dan: kolo je opet otvoreno za unos.
+            $status = 'open';
         }
         $games = array_merge(...array_map(fn (array $day) => $day['games'], array_values($days)));
         if ($status === 'locked' && !array_filter($games, fn (array $game) => !$game['played'])) {
@@ -323,6 +443,42 @@ function syncEuroleague(PDO $db): void
         }
     }
 
+    // Prvi poeni na meču: čim utakmica počne, na par minuta, dok se ne zna strijelac.
+    if (minutesSince($db, 'first_scorers_checked_at') >= FIRST_SCORER_CHECK_MINUTES) {
+        $stmt = $db->prepare(
+            'SELECT 1 FROM games g JOIN picks p ON p.game_id = g.id
+             WHERE g.season = ? AND g.first_scorer_code IS NULL AND g.starts_at <= ? LIMIT 1'
+        );
+        $stmt->execute([$season, date('Y-m-d H:i:s')]);
+        if ($stmt->fetchColumn()) {
+            setSetting($db, 'first_scorers_checked_at', date('Y-m-d H:i:s'));
+            foreach (checkFirstScorers($db, $season) as $roundId) {
+                autoGradeRound($db, $roundId);
+            }
+        }
+    }
+
     advanceRounds($db);
     ensureSlips($db);
+
+    // Fantasy liga ide posljednja i odvojeno: njena greška ne smije zaustaviti tikete.
+    // FANTASY ISKLJUČEN dok ne ide live: ne skida PIR, ne vodi draft ni izmjene.
+    // try {
+    //     syncFantasy($db, $season);
+    // } catch (Throwable $e) {
+    //     if ($db->inTransaction()) {
+    //         $db->rollBack();
+    //     }
+    //     error_log((string) $e);
+    // }
+
+    // Zapisnici za Formu, isto odvojeno.
+    try {
+        syncForma($db, $season);
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        error_log((string) $e);
+    }
 }

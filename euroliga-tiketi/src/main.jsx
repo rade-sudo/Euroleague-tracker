@@ -6,6 +6,9 @@ import AccountPage from './AccountPage.jsx'
 import App from './App.jsx'
 import CashPage from './CashPage.jsx'
 import DrumPage from './DrumPage.jsx'
+// FANTASY ISKLJUČEN dok ne ide live; bez ovog importa Fantasy fajlovi ne ulaze u build.
+// import FantasyPage from './FantasyPage.jsx'
+import FormaPage from './FormaPage.jsx'
 import InstallPrompt from './InstallPrompt.jsx'
 import Login from './Login.jsx'
 import PlayersPage from './PlayersPage.jsx'
@@ -23,6 +26,8 @@ function page() {
   if (path === '/statistika') return <StatsPage />
   if (path === '/nalog') return <AccountPage />
   if (path === '/kasa') return <CashPage />
+  // FANTASY ISKLJUČEN: if (path === '/fantasy') return <FantasyPage />
+  if (path === '/forma') return <FormaPage />
   return <App />
 }
 

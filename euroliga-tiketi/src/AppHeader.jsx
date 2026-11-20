@@ -5,7 +5,10 @@ const NAV = [
   { id: 'tabela', href: '/', label: 'Tabela' },
   { id: 'bubanj', href: '/bubanj', label: 'Bubanj' },
   { id: 'statistika', href: '/statistika', label: 'Statistika' },
+  { id: 'forma', href: '/forma', label: 'Forma' },
   { id: 'kasa', href: '/kasa', label: 'Kasa' },
+  // FANTASY ISKLJUČEN dok ne ide live (vrati i rutu u main.jsx):
+  // { id: 'fantasy', href: '/fantasy', label: 'Fantasy' },
   { id: 'igraci', href: '/igraci', label: 'Igrači', adminOnly: true },
 ]
 

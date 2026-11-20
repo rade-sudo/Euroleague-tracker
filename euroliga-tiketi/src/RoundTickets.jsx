@@ -66,6 +66,8 @@ function shortDate(value) {
   return `${SHORT_DAYS[date.getDay()]} ${date.getDate()}. ${date.getMonth() + 1}.`
 }
 
+const DAY_ACCUSATIVE = ['nedjelju', 'ponedjeljak', 'utorak', 'srijedu', 'četvrtak', 'petak', 'subotu']
+const dayAccusativeName = (value) => DAY_ACCUSATIVE[localDate(value).getDay()]
 const shortDay = (value) => SHORT_DAYS[localDate(value).getDay()]
 const timeOf = (value) => value.slice(11, 16)
 
@@ -163,6 +165,8 @@ const isUnderTip = (tip) => tip.startsWith('-') || tip.startsWith('−')
 
 // Isto pravilo kao na serveru: nije igrao = prošao, "+" traži više od granice, "−" manje.
 function lineVerdict(pick) {
+  // Prvi poeni na meču (Maxbet akcija): „+“ je odmah prošao.
+  if (pick.firstPoints && !isUnderTip(pick.tip)) return true
   if (pick.didPlay === null) return null
   if (!pick.didPlay) return true
   if (pick.line === null) return null
@@ -311,7 +315,19 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
   const autoGrade = loaded && tickets.autoGrade
   const byFriend = new Map(loaded ? tickets.list.map((ticket) => [ticket.friendId, ticket]) : [])
   // Izvučeni iz bubnja u ovom kolu biraju po 2 igrača.
-  const twoPicks = new Set(loaded ? tickets.twoPicks : [])
+  // Izvučeni iz bubnja i za koji dan biraju 2 igrača: friendId → ['2026-10-09'] (null za kolo bez rasporeda).
+  const twoPickDays = new Map()
+  for (const entry of loaded ? tickets.twoPicks : []) {
+    twoPickDays.set(entry.friendId, [...(twoPickDays.get(entry.friendId) ?? []), entry.day])
+  }
+  // "2 igrača · pet" (ili "Biraš 2 igrača · petak"); null ako nije izvučen.
+  const twoPicksLabel = (friendId, base, long = false) => {
+    const days = twoPickDays.get(friendId)
+    if (!days) return null
+    const named = days.filter(Boolean).map((date) => (long ? DAYS[localDate(date).getDay()] : shortDay(date)))
+    return named.length ? `${base} · ${named.join(', ')}` : base
+  }
+  const twoPicksOn = (friendId, date) => twoPickDays.get(friendId)?.some((day) => day === null || day === date) ?? false
   const ticketFriendId = editingFriendId ?? user.friendId
   const ticketFriend = friends.find((friend) => friend.id === ticketFriendId)
   const ownTicket = byFriend.get(ticketFriendId)
@@ -482,6 +498,18 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
     })
   }
 
+  function setLock(day, locked) {
+    const what = day ? `tiket za ${dayAccusativeName(day.date)}` : `kolo ${round.number}`
+    const text = locked
+      ? `Zaključati ${what}? Drugari više neće moći mijenjati igrače, a odmah se prave tiketi za granice i kvote.`
+      : `Otključati ${what}? Drugari opet mogu mijenjati igrače. Ako je rok prošao, ostaje otključano dok ponovo ne zaključaš.`
+    if (!window.confirm(text)) return
+    run(async () => {
+      onRoundChange(await api(`/rounds/${round.id}/lock`, { method: 'PUT', body: JSON.stringify({ day: day?.date ?? null, locked }) }))
+      reloadTickets()
+    })
+  }
+
   function updateRound(changes, confirmText) {
     if (confirmText && !window.confirm(confirmText)) return
     run(async () => {
@@ -509,7 +537,11 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
             games={games}
             manualResult={results[friend.id]?.[round.id] ?? ''}
             isMe={friend.id === user.friendId}
-            twoPicks={twoPicks.has(friend.id)}
+            twoPicks={
+              dayFilter
+                ? twoPicksOn(friend.id, dayFilter.date) && '2 igrača'
+                : twoPicksLabel(friend.id, '2 igrača')
+            }
             winner={finished && Boolean(tickets.winner?.friendIds.includes(friend.id))}
             finished={finished}
             isAdmin={isAdmin}
@@ -634,6 +666,26 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
             Zaključaj kolo
           </button>
         )}
+        {isAdmin && phase < 3 && loaded && scheduled && (
+          <div className="flex flex-wrap gap-2">
+            {ticketDays.some((day) => !day.locked) && (
+              <button type="button" disabled={busy} onClick={() => setLock(null, true)} className={primaryButtonClass}>
+                <LockIcon className="size-4" />
+                Zaključaj kolo
+              </button>
+            )}
+            {ticketDays.some((day) => day.locked) && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => setLock(null, false)}
+                className="inline-flex h-11 items-center justify-center gap-2 rounded-[9px] px-4 font-display text-[15px] font-bold uppercase tracking-[0.1em] text-zinc-300 ring-1 ring-white/16 ring-inset transition hover:text-white hover:ring-white/30 disabled:pointer-events-none disabled:opacity-40"
+              >
+                Otključaj kolo
+              </button>
+            )}
+          </div>
+        )}
         {phase === 3 && loaded && tickets.winner && (
           <WinnerBanner winner={tickets.winner} friends={friends} />
         )}
@@ -672,8 +724,8 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
                         <h3 className={`min-w-0 truncate ${panelTitleClass}`}>
                           {editingFriendId ? `Tiket · ${ticketFriend.name}` : 'Tvoj tiket'}
                         </h3>
-                        {twoPicks.has(ticketFriendId) && (
-                          <TwoPicksTag>{editingFriendId ? 'Bira 2 igrača' : 'Biraš 2 igrača'}</TwoPicksTag>
+                        {twoPickDays.has(ticketFriendId) && (
+                          <TwoPicksTag>{twoPicksLabel(ticketFriendId, editingFriendId ? 'Bira 2 igrača' : 'Biraš 2 igrača', true)}</TwoPicksTag>
                         )}
                       </div>
                       {editingFriendId ? (
@@ -688,7 +740,9 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
                       {ownTicket.picks.length ? (
                         groupByDay(ownTicket.picks, games).map((group) => (
                           <Fragment key={group.key}>
-                            {group.day && <TicketDayHeader day={group.day} />}
+                            {group.day && (
+                              <TicketDayHeader day={group.day} twoPicks={twoPicksOn(ticketFriendId, group.day.date)} />
+                            )}
                             {group.picks.map(({ pick, index }) => (
                               <PickRow key={pick.id} index={index} pick={pick} game={games.get(pick.gameId)}>
                                 {(!group.day?.locked || isAdmin) && (
@@ -808,7 +862,7 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
                               {count ? `Predao · ${players(count)}` : 'Još nije predao'}
                             </small>
                           </div>
-                          {twoPicks.has(friend.id) && <TwoPicksTag>2 igrača</TwoPicksTag>}
+                          {twoPickDays.has(friend.id) && <TwoPicksTag>{twoPicksLabel(friend.id, '2 igrača')}</TwoPicksTag>}
                           {ticket?.picks.length > 0 && (
                             <span className="flex gap-1">
                               {sortByGame(ticket.picks, games).map((pick) => (
@@ -873,7 +927,12 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
                       <h3 className={panelTitleClass}>Utakmice kola {round.number}</h3>
                       <span className="text-[13px] text-zinc-400">vrijeme po našoj zoni</span>
                     </div>
-                    <GamesList schedule={schedule} highlight={myGameIds} />
+                    <GamesList
+                      schedule={schedule}
+                      highlight={myGameIds}
+                      onLock={isAdmin ? (day, locked) => setLock(day, locked) : null}
+                      busy={busy}
+                    />
                   </>
                 )}
               </div>
@@ -959,10 +1018,13 @@ function DeadlineMeta({ deadline, isAdmin, draft, busy, onEdit, onDraftChange, o
   )
 }
 
-function TicketDayHeader({ day }) {
+function TicketDayHeader({ day, twoPicks = false }) {
   return (
     <div className="flex justify-between gap-2.5 border-b border-line bg-white/2 px-3.5 py-2 font-display text-xs font-bold uppercase tracking-[0.14em] text-zinc-400 first:rounded-t-xl">
-      <span>{dayTitle(day.date)}</span>
+      <span>
+        {dayTitle(day.date)}
+        {twoPicks && <span className="text-neon"> · 2 igrača</span>}
+      </span>
       <em className={`not-italic ${day.ticket && !day.locked ? 'text-accent' : 'text-zinc-600'}`}>
         {!day.ticket ? 'nema tiketa' : day.locked ? 'zaključano' : `rok ${timeOf(day.deadline)}`}
       </em>
@@ -970,7 +1032,7 @@ function TicketDayHeader({ day }) {
   )
 }
 
-function GamesList({ schedule, highlight }) {
+function GamesList({ schedule, highlight, onLock, busy }) {
   return (
     <div className="overflow-hidden rounded-xl ring-1 ring-line ring-inset">
       {schedule.map((day) => (
@@ -981,17 +1043,31 @@ function GamesList({ schedule, highlight }) {
             }`}
           >
             <span>{dayTitle(day.date)}</span>
-            <em
-              className={`not-italic text-[11px] tracking-[0.06em] ${
-                day.ticket ? 'rounded-full bg-accent px-1.75 text-ink' : 'text-zinc-600'
-              }`}
-            >
-              {!day.ticket
-                ? 'ne igramo, jedna utakmica'
-                : day.locked
-                  ? 'tiket · zaključan'
-                  : `tiket · rok ${timeOf(day.deadline)}`}
-            </em>
+            <span className="flex items-center gap-2.5">
+              {onLock && day.ticket && (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => onLock(day, !day.locked)}
+                  className="font-sans text-[12px] font-semibold normal-case tracking-normal text-accent underline-offset-4 hover:underline disabled:opacity-40"
+                >
+                  {day.locked ? 'otključaj' : 'zaključaj'}
+                </button>
+              )}
+              <em
+                className={`not-italic text-[11px] tracking-[0.06em] ${
+                  day.ticket ? 'rounded-full bg-accent px-1.75 text-ink' : 'text-zinc-600'
+                }`}
+              >
+                {!day.ticket
+                  ? 'ne igramo, jedna utakmica'
+                  : day.locked
+                    ? day.manual ? 'tiket · zaključan ručno' : 'tiket · zaključan'
+                    : day.manual === false
+                      ? 'tiket · otključan'
+                      : `tiket · rok ${timeOf(day.deadline)}`}
+              </em>
+            </span>
           </div>
           {day.games.map((game, index) => {
             const first = index === 0 && day.ticket
@@ -1046,7 +1122,10 @@ function PickRow({ index, pick, game, children }) {
     <div className="grid grid-cols-[28px_minmax(0,1fr)_auto] items-center gap-3 border-b border-dashed border-line px-3.5 py-3 last:border-b-0">
       <span className="font-display text-[15px] font-bold tabular-nums text-zinc-600">{index + 1}</span>
       <div className="min-w-0">
-        <div className="font-semibold wrap-anywhere text-white">{pick.player}</div>
+        <div className="flex flex-wrap items-center gap-x-1.5 font-semibold wrap-anywhere text-white">
+          {pick.player}
+          {pick.firstPoints && <PpmTag />}
+        </div>
         <div className="text-[13px] text-zinc-400">{pick.tip || 'bez tipa'}</div>
         {game && (
           <div className="flex items-center gap-1.25 text-[12.5px] text-zinc-400">
@@ -1129,7 +1208,10 @@ function PlayerCard({ pick, owner, info, game, others, isAdmin }) {
           {info?.clubCode ?? '?'}
         </span>
         <div className="min-w-0 flex-1">
-          <b className="block font-semibold leading-tight text-white">{pick.player}</b>
+          <b className="flex flex-wrap items-center gap-x-1.5 font-semibold leading-tight text-white">
+            {pick.player}
+            {pick.firstPoints && <PpmTag />}
+          </b>
           <small className="block text-[13px] text-zinc-400">
             {info?.club ? `${info.club} · ` : ''}kod: {owner}
           </small>
@@ -1415,6 +1497,7 @@ function SlipCard({ slip, day, picks, games, friendName, myFriendId, isAdmin, st
             <div className="min-w-0">
               <b className="block font-semibold wrap-anywhere text-white">
                 {pick.player} <span className="font-normal text-zinc-400">{pick.tip || '+'}</span>
+                {pick.firstPoints && <span className="ml-1.5 align-[1px]"><PpmTag /></span>}
               </b>
               <small className="block text-[12.5px] text-zinc-400">
                 {friendName(pick.friendId)}
@@ -1494,6 +1577,18 @@ function WinnerBanner({ winner, friends }) {
   )
 }
 
+// Prvi poeni na meču: Maxbet akcija, tip „+“ je odmah prošao.
+function PpmTag() {
+  return (
+    <span
+      title="Prvi poeni na meču: tip + je odmah prošao"
+      className="inline-flex shrink-0 items-center rounded-[4px] bg-gold px-1.25 font-display text-[11px] font-extrabold leading-[1.5] tracking-[0.1em] text-ink"
+    >
+      PPM
+    </span>
+  )
+}
+
 function TwoPicksTag({ children }) {
   return (
     <span className="shrink-0 whitespace-nowrap rounded-[5px] bg-neon/10 px-1.75 py-0.5 font-display text-[11px] font-bold uppercase tracking-[0.14em] text-neon">
@@ -1547,7 +1642,7 @@ function TicketCard({ friend, picks, games, manualResult, isMe, twoPicks, winner
       <div className="flex items-center gap-2.75 border-b border-line px-3.5 py-3.25">
         <TicketAvatar name={friend.name} isMe={isMe} />
         <div className="min-w-0 flex-1 truncate text-base font-semibold text-white">{friend.name}</div>
-        {twoPicks && <TwoPicksTag>2 igrača</TwoPicksTag>}
+        {twoPicks && <TwoPicksTag>{twoPicks}</TwoPicksTag>}
         {winner && (
           <span className="inline-flex shrink-0 items-center gap-1 rounded-[5px] bg-gold py-px pr-1.75 pl-1.25 font-display text-[11px] font-extrabold uppercase tracking-[0.14em] text-ink">
             <TrophyIcon className="size-3" />
@@ -1613,7 +1708,10 @@ function BoardPick({ pick, game, finished, isAdmin, autoGrade, busy, onGrade, on
   return (
     <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-b border-dashed border-line px-3.5 py-2.75 last:border-b-0">
       <div className="min-w-0">
-        <div className="font-semibold wrap-anywhere text-white">{pick.player}</div>
+        <div className="flex flex-wrap items-center gap-x-1.5 font-semibold wrap-anywhere text-white">
+          {pick.player}
+          {pick.firstPoints && <PpmTag />}
+        </div>
         {game && (
           <div className="text-[12.5px] text-zinc-400">
             <span className="mr-1.5 inline-block rounded bg-white/6 px-1.5 font-display text-[11px] font-bold uppercase tracking-widest text-zinc-400">

@@ -13,6 +13,8 @@
   --color-neon: #b8ff3c;
   /* Pobjednik kola */
   --color-gold: #ffc53d;
+  /* Fantasy: centri */
+  --color-sky: #62c6ff;
 }
 
 :root {
@@ -31,11 +33,30 @@ body {
   }
 }
 
+/* Fantasy: imena se miješaju dok bubanj izvlači redoslijed drafta. */
+@keyframes shake {
+  50% {
+    transform: translateY(-2px);
+  }
+}
+
 /* Izvučeno ime "iskače" u svoje mjesto na stranici Bubanj. */
 @keyframes pop {
   from {
     transform: scale(0.94);
     opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+/* Forma: detalj igrača se otvara ispod njegovog reda. */
+@keyframes open-down {
+  from {
+    transform: translateY(-3px);
+    opacity: 0.4;
   }
   to {
     transform: none;

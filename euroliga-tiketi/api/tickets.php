@@ -7,7 +7,7 @@ const MAX_PLAYER_LENGTH = 40;
 const MAX_TIP_LENGTH = 30;
 const ROUND_STATUSES = ['open', 'locked', 'done'];
 const ROUND_COLUMNS = "id, number, status, DATE_FORMAT(deadline_at, '%Y-%m-%dT%H:%i') AS deadline";
-const PICK_COLUMNS = 'id, friend_id, player_id, game_id, slip_id, player, tip, line, points, did_play, hit, graded_by';
+const PICK_COLUMNS = 'id, friend_id, player_id, game_id, slip_id, player, tip, line, points, did_play, first_points, hit, graded_by';
 
 function findRound(PDO $db, int $id): array
 {
@@ -19,7 +19,7 @@ function findRound(PDO $db, int $id): array
 function findPick(PDO $db, int $id): array
 {
     $stmt = $db->prepare(
-        'SELECT p.id, p.round_id, p.friend_id, p.game_id, r.number, r.status
+        'SELECT p.id, p.round_id, p.friend_id, p.player_id, p.game_id, r.number, r.status
          FROM picks p JOIN rounds r ON r.id = p.round_id WHERE p.id = ?'
     );
     $stmt->execute([$id]);
@@ -40,6 +40,8 @@ function pickPayload(array $row): array
         'line' => $row['line'] === null ? null : (float) $row['line'],
         'points' => $int($row['points']),
         'didPlay' => $bool($row['did_play']),
+        // Prvi poeni na meču (PPM).
+        'firstPoints' => (bool) $row['first_points'],
         'hit' => $bool($row['hit']),
         'gradedBy' => $row['graded_by'],
     ];

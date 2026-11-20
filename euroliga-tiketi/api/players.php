@@ -5,6 +5,13 @@ declare(strict_types=1);
 // Javni API koji koristi i euroleaguebasketball.net; personType=J vraća samo igrače.
 const EUROLEAGUE_PLAYERS_URL = 'https://api-live.euroleague.net/v2/competitions/E/seasons/%s/people?personType=J';
 const MAX_PICK_NAME_LENGTH = 40;
+// Pozicija sa Euroleague spiska i zapisnika (G, F, C); treba Formi (i fantasy ligi).
+const PLAYER_POSITION_NAMES = ['Guard' => 'G', 'Forward' => 'F', 'Center' => 'C'];
+
+function playerPositionOf(array $entry): ?string
+{
+    return PLAYER_POSITION_NAMES[$entry['positionName'] ?? ''] ?? null;
+}
 
 // Sezona počinje u julu: oktobar 2026 je sezona 2026/27, kod E2026.
 function currentSeasonCode(): string
@@ -127,8 +134,9 @@ function refreshPlayers(PDO $db): array
     $db->beginTransaction();
     $db->exec('UPDATE players SET active = 0');
     $upsert = $db->prepare(
-        'INSERT INTO players (code, name, club_code, club_name, active, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+        'INSERT INTO players (code, name, club_code, club_name, position, active, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE name = VALUES(name), club_code = VALUES(club_code), club_name = VALUES(club_name),
+                                 position = IF(position_fixed, position, VALUES(position)),
                                  active = VALUES(active), updated_at = VALUES(updated_at)'
     );
     foreach ($best as $code => $entry) {
@@ -137,6 +145,8 @@ function refreshPlayers(PDO $db): array
             mb_substr(formatPlayerName((string) $entry['person']['name'], (string) ($entry['person']['jerseyName'] ?? '')), 0, 60),
             $entry['club']['code'] ?? null,
             mb_substr((string) ($entry['club']['abbreviatedName'] ?? $entry['club']['name'] ?? ''), 0, 60) ?: null,
+            // Pozicija za Formu (G, F, C).
+            playerPositionOf($entry),
             (int) (bool) ($entry['active'] ?? false),
             $now,
         ]);

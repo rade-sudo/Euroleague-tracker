@@ -11,9 +11,12 @@ const NOTIFICATION_TYPES = [
     'locked' => ['name' => 'Dan tiketa zaključan', 'when' => 'Kad se dan tiketa zaključa i igrači se više ne mogu mijenjati'],
     'graded' => ['name' => 'Ocjena mog igrača', 'when' => 'Kad tvoj igrač dobije ✓ ili ✗'],
     'results' => ['name' => 'Rezultati kola', 'when' => 'Kad su svi igrači kola ocijenjeni'],
+    'slips' => ['name' => 'Tiketi spremni', 'when' => 'Kad admin uplati tikete dana (upiše kvote)'],
     'slip' => ['name' => 'Tiket prošao', 'when' => 'Kad tiket prođe, sa tvojim dijelom isplate'],
     'lines' => ['name' => 'Upiši granice', 'when' => 'Kad se dan tiketa zaključa', 'admin' => true],
     'waiting' => ['name' => 'Igrač čeka ocjenu', 'when' => 'Utakmica gotova, a granica nije upisana', 'admin' => true],
+    // FANTASY ISKLJUČEN dok ne ide live (ne prikazuje se ni u podešavanjima obavještenja):
+    // 'fantasy' => ['name' => 'Fantasy liga', 'when' => 'Draft, rok za postavu, izmjene, razmjene i pobjednik kola'],
 ];
 const NOTIFY_CHECK_SECONDS = 60;
 // Zakašnjeli događaj (npr. cron nije radio) se ne šalje: zastarjelo obavještenje samo zbunjuje.
@@ -82,6 +85,9 @@ function nextTicketDay(array $schedule): ?array
 
 function pickVerdictText(array $pick): string
 {
+    if ($pick['first_points'] && $pick['hit']) {
+        return 'Dao je prve poene na meču (PPM), prošao!';
+    }
     $verdict = $pick['hit'] ? 'Prošao.' : 'Nije prošao.';
     if ($pick['did_play'] !== null && !$pick['did_play']) {
         return 'Nije igrao, računa se kao prošao.';
@@ -118,7 +124,7 @@ function collectNotificationEvents(PDO $db, array $users): array
         $ticketDays = array_values(array_filter($schedule, fn (array $day) => $day['ticket']));
         $next = nextTicketDay($schedule);
 
-        $stmt = $db->prepare('SELECT id, friend_id, game_id, player, tip, line, points, did_play, hit FROM picks WHERE round_id = ? ORDER BY id');
+        $stmt = $db->prepare('SELECT id, friend_id, game_id, slip_id, player, tip, line, points, did_play, first_points, hit FROM picks WHERE round_id = ? ORDER BY id');
         $stmt->execute([$roundId]);
         $picks = $stmt->fetchAll();
         $friendsWithPicks = array_unique(array_map(fn (array $p) => (int) $p['friend_id'], $picks));
@@ -138,14 +144,24 @@ function collectNotificationEvents(PDO $db, array $users): array
 
         // Izvučeni iz bubnja.
         if ($round['status'] !== 'done') {
-            $stmt = $db->prepare('SELECT id, friend_id FROM draws WHERE round_id = ? AND cancelled_at IS NULL AND replaced_at IS NULL');
+            $stmt = $db->prepare("SELECT id, friend_id, DATE_FORMAT(day, '%Y-%m-%d') AS day FROM draws WHERE round_id = ? AND cancelled_at IS NULL AND replaced_at IS NULL");
             $stmt->execute([$roundId]);
             foreach ($stmt as $draw) {
                 $userId = $byFriend[(int) $draw['friend_id']] ?? null;
                 if ($userId === null) {
                     continue;
                 }
-                $body = "U kolu {$number} biraš 2 igrača." . ($next ? ' Prvi rok je u ' . dayAccusative($next['date']) . ' u ' . substr($next['deadline'], 11, 5) . '.' : '');
+                // Izvlačenje za dan: "Kolo 4, petak: biraš 2 igrača. Rok je u petak u 19:45."
+                $drawDay = null;
+                foreach ($ticketDays as $day) {
+                    if ($day['date'] === $draw['day']) {
+                        $drawDay = $day;
+                    }
+                }
+                $body = $drawDay
+                    ? "Kolo {$number}, " . DAY_NOMINATIVE[(int) date('w', strtotime($drawDay['date']))] . ': biraš 2 igrača. Rok je u '
+                        . dayAccusative($drawDay['date']) . ' u ' . substr($drawDay['deadline'], 11, 5) . '.'
+                    : "U kolu {$number} biraš 2 igrača." . ($next ? ' Prvi rok je u ' . dayAccusative($next['date']) . ' u ' . substr($next['deadline'], 11, 5) . '.' : '');
                 $events[] = ['key' => "drum:{$draw['id']}", 'type' => 'drum', 'recipients' => [
                     $userId => ['title' => 'Izvučen si iz bubnja', 'body' => $body, 'tag' => "drum-{$roundId}"],
                 ]];
@@ -209,6 +225,42 @@ function collectNotificationEvents(PDO $db, array $users): array
             ]]];
         }
 
+        // Tiketi spremni: kad svi tiketi jednog dana imaju kvotu (uplaćeni su). Svako vidi i gdje su mu igrači.
+        $stmt = $db->prepare(
+            "SELECT s.id, DATE_FORMAT(s.day, '%Y-%m-%d') AS day, s.number, s.odds, COUNT(p.id) AS players
+             FROM slips s LEFT JOIN picks p ON p.slip_id = s.id WHERE s.round_id = ?
+             GROUP BY s.id, s.day, s.number, s.odds ORDER BY s.day, s.number"
+        );
+        $stmt->execute([$roundId]);
+        $slipsByDay = [];
+        foreach ($stmt as $slip) {
+            $slipsByDay[$slip['day'] ?? ''][] = $slip;
+        }
+        foreach ($slipsByDay as $date => $daySlips) {
+            if (array_filter($daySlips, fn (array $slip) => $slip['odds'] === null)) {
+                continue;
+            }
+            $dayName = $date === '' ? '' : ' za ' . dayAccusative($date);
+            $list = implode(', ', array_map(
+                fn (array $slip) => "tiket {$slip['number']} ({$slip['players']} igrača, kvota " . number_format((float) $slip['odds'], 2, ',', '.') . ')',
+                $daySlips,
+            ));
+            $slipNumbers = array_column($daySlips, 'number', 'id');
+            $slipIds = array_map('intval', array_keys($slipNumbers));
+            $recipients = [];
+            foreach ($users as $id => $u) {
+                $mine = array_values(array_filter($picks, fn (array $p) => (int) $p['friend_id'] === (int) $u['friend_id']
+                    && in_array((int) ($p['slip_id'] ?? 0), $slipIds, true)));
+                $minePart = $mine ? ' Tvoji: ' . implode(', ', array_map(fn (array $p) => "{$p['player']} (T{$slipNumbers[$p['slip_id']]})", $mine)) . '.' : '';
+                $recipients[$id] = [
+                    'title' => "Tiketi{$dayName} su spremni",
+                    'body' => 'Uplaćeno: ' . $list . '.' . $minePart . ' Pogledaj ih u aplikaciji.',
+                    'tag' => "slips-{$roundId}-{$date}",
+                ];
+            }
+            $events[] = ['key' => "slips:{$roundId}:{$date}", 'type' => 'slips', 'recipients' => $recipients];
+        }
+
         // Tiket prošao: svima, a onima čiji su igrači na tiketu i njihov dio isplate.
         foreach (playedSlips($db, [$roundId]) as $slip) {
             if ($slip['status'] !== 'won') {
@@ -251,6 +303,14 @@ function collectNotificationEvents(PDO $db, array $users): array
             $events[] = ['key' => "results:{$roundId}", 'type' => 'results', 'recipients' => $recipients];
         }
     }
+
+    // Fantasy liga; njena greška ne smije zaustaviti obavještenja za tikete.
+    // FANTASY ISKLJUČEN dok ne ide live:
+    // try {
+    //     array_push($events, ...fantasyNotificationEvents($db, $users, $byFriend));
+    // } catch (Throwable $e) {
+    //     error_log((string) $e);
+    // }
     return $events;
 }
 

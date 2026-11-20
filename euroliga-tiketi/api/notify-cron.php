@@ -23,6 +23,9 @@ require __DIR__ . '/slips.php';
 require __DIR__ . '/overview.php';
 require __DIR__ . '/push.php';
 require __DIR__ . '/notifications.php';
+// FANTASY ISKLJUČEN dok ne ide live:
+// require __DIR__ . '/fantasy.php';
+require __DIR__ . '/forma.php';
 
 // U API-ju fail() vraća grešku pregledaču; ovdje je samo prekid sa porukom.
 function fail(int $status, string $message): never

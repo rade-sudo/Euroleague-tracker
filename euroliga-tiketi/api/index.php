@@ -17,6 +17,9 @@ require __DIR__ . '/slips.php';
 require __DIR__ . '/overview.php';
 require __DIR__ . '/push.php';
 require __DIR__ . '/notifications.php';
+// FANTASY ISKLJUČEN dok ne ide live; fantasy.php se ni ne kopira u dist (vite.config.js).
+// require __DIR__ . '/fantasy.php';
+require __DIR__ . '/forma.php';
 require __DIR__ . '/stats.php';
 require __DIR__ . '/account.php';
 require __DIR__ . '/backups.php';
@@ -180,8 +183,21 @@ $isTicketEdit = ($method === 'POST' && preg_match('#^/rounds/\d+/picks$#', $rout
     || ($method === 'DELETE' && preg_match('#^/picks/\d+$#', $route));
 $isOwnAccount = ($method === 'POST' && in_array($route, ['/account/password', '/push/subscribe', '/push/unsubscribe', '/push/test'], true))
     || ($method === 'PUT' && $route === '/notifications');
-if ($method !== 'GET' && !$isTicketEdit && !$isOwnAccount && $user['role'] !== 'admin') {
+// Fantasy: svako bira na draftu, pravi postavu i radi izmjene za svoju ekipu; podešavanja provjerava fantasy.php.
+// FANTASY ISKLJUČEN dok ne ide live: /fantasy rute vraćaju 404. Za uključivanje vrati ova dva reda.
+// $isFantasy = str_starts_with($route, '/fantasy');
+$isFantasy = false;
+if ($method !== 'GET' && !$isTicketEdit && !$isOwnAccount && !$isFantasy && $user['role'] !== 'admin') {
     fail(403, 'Samo admin može mijenjati tabelu.');
+}
+
+// if ($isFantasy) {
+//     handleFantasyRoute($db, $user, $method, $route);
+// }
+
+// Forma igrača: svi gledaju, granice upisuje admin.
+if (str_starts_with($route, '/forma')) {
+    handleFormaRoute($db, $user, $method, $route);
 }
 
 if ($route === '/state' && $method === 'GET') {
@@ -198,8 +214,8 @@ if (preg_match('#^/rounds/(\d+)/tickets$#', $route, $m) && $method === 'GET') {
         'round' => $round,
         'tickets' => $tickets,
         'players' => playerCards($db, $tickets, (int) $round['id']),
-        // Izvučeni iz bubnja: u ovom kolu biraju po 2 igrača.
-        'twoPicks' => activeDrawFriendIds($db, (int) $round['id']),
+        // Izvučeni iz bubnja: ko bira 2 igrača i za koji dan.
+        'twoPicks' => roundTwoPicks($db, (int) $round['id']),
         'schedule' => $schedule,
         // Tiket 1 i 2 po danu; drugari vide samo uplaćene.
         'slips' => roundSlips($db, (int) $round['id'], $user['role'] === 'admin'),
@@ -210,61 +226,80 @@ if (preg_match('#^/rounds/(\d+)/tickets$#', $route, $m) && $method === 'GET') {
     ]);
 }
 
+// Bubanj: svaki dan tiketa ima svoje izvlačenje (?day=2026-10-09; bez dana prvi neizvučeni).
 if ($route === '/draw' && $method === 'GET') {
-    respond(200, drawState($db));
+    respond(200, drawState($db, $_GET['day'] ?? null));
 }
 
 if ($route === '/draw' && $method === 'POST') {
+    $body = readJson();
     $db->beginTransaction();
-    $round = lockRound($db, readJson()['roundId'] ?? null);
-    $taken = activeDrawSlots($db, (int) $round['id']);
-    $free = array_values(array_diff(DRAW_SLOTS, $taken));
+    $round = lockRound($db, $body['roundId'] ?? null);
+    $day = drawDayFor($db, $round, $body['day'] ?? null);
+    $free = array_values(array_diff(DRAW_SLOTS, activeDrawSlots($db, (int) $round['id'], $day)));
     if (!$free) {
-        fail(409, 'Oba su već izvučena za ovo kolo.');
+        fail(409, 'Oba su već izvučena za taj dan.');
     }
-    $friendId = drawIntoSlot($db, $round, $free[0], $user['id']);
+    $friendId = drawIntoSlot($db, $round, $day, $free[0], $user['id']);
     $db->commit();
     notifySafely($db);
-    respond(200, ['drawnFriendId' => $friendId, 'state' => drawState($db)]);
+    respond(200, ['drawnFriendId' => $friendId, 'state' => drawState($db, $day)]);
 }
 
-// Zamjena: izvučeni ne igra ovo kolo, pa na njegovo mjesto izlazi novi iz bubnja.
+// Zamjena: izvučeni ne igra taj dan, pa na njegovo mjesto izlazi novi iz bubnja.
 if ($route === '/draw/replace' && $method === 'POST') {
     $body = readJson();
     $db->beginTransaction();
     $round = lockRound($db, $body['roundId'] ?? null);
+    $day = drawDayFor($db, $round, $body['day'] ?? null);
     $slot = filter_var($body['slot'] ?? null, FILTER_VALIDATE_INT);
-    $stmt = $db->prepare('UPDATE draws SET replaced_at = ? WHERE round_id = ? AND slot = ? AND replaced_at IS NULL AND cancelled_at IS NULL');
-    $stmt->execute([date('Y-m-d H:i:s'), $round['id'], $slot === false ? 0 : $slot]);
+    $stmt = $db->prepare(
+        'UPDATE draws SET replaced_at = ? WHERE round_id = ? AND day <=> ? AND slot = ? AND replaced_at IS NULL AND cancelled_at IS NULL'
+    );
+    $stmt->execute([date('Y-m-d H:i:s'), $round['id'], $day, $slot === false ? 0 : $slot]);
     if ($stmt->rowCount() === 0) {
         fail(404, 'Na tom mjestu nema izvučenog.');
     }
-    $friendId = drawIntoSlot($db, $round, $slot, $user['id']);
+    $friendId = drawIntoSlot($db, $round, $day, $slot, $user['id']);
     $db->commit();
     notifySafely($db);
-    respond(200, ['drawnFriendId' => $friendId, 'state' => drawState($db)]);
+    respond(200, ['drawnFriendId' => $friendId, 'state' => drawState($db, $day)]);
 }
 
 // Poništavanje ne briše ništa: izvlačenje ostaje u istoriji označeno kao poništeno.
 if ($route === '/draw/cancel' && $method === 'POST') {
+    $body = readJson();
     $db->beginTransaction();
-    $round = lockRound($db, readJson()['roundId'] ?? null);
-    $stmt = $db->prepare('UPDATE draws SET cancelled_at = ? WHERE round_id = ? AND cancelled_at IS NULL');
-    $stmt->execute([date('Y-m-d H:i:s'), $round['id']]);
+    $round = lockRound($db, $body['roundId'] ?? null);
+    $day = drawDayFor($db, $round, $body['day'] ?? null);
+    $stmt = $db->prepare('UPDATE draws SET cancelled_at = ? WHERE round_id = ? AND day <=> ? AND cancelled_at IS NULL');
+    $stmt->execute([date('Y-m-d H:i:s'), $round['id'], $day]);
     if ($stmt->rowCount() === 0) {
-        fail(409, 'Za ovo kolo nema izvlačenja koje bi se poništilo.');
+        fail(409, 'Za taj dan nema izvlačenja koje bi se poništilo.');
     }
     $db->commit();
-    respond(200, drawState($db));
+    respond(200, drawState($db, $day));
+}
+
+// "Ne izvlačimo za ovaj dan" (jedan tiket): {"roundId", "day", "skip": true | false}.
+if ($route === '/draw/skip' && $method === 'POST') {
+    $body = readJson();
+    $db->beginTransaction();
+    $round = lockRound($db, $body['roundId'] ?? null);
+    $day = drawDayFor($db, $round, $body['day'] ?? null);
+    setDrawSkip($db, $round, $day, (bool) ($body['skip'] ?? true));
+    $db->commit();
+    respond(200, drawState($db, $day));
 }
 
 if ($route === '/draw/rule' && $method === 'PUT') {
-    $rule = readJson()['rule'] ?? null;
+    $body = readJson();
+    $rule = $body['rule'] ?? null;
     if (!in_array($rule, DRAW_RULES, true)) {
         fail(422, 'Nepoznato pravilo bubnja.');
     }
     setSetting($db, 'draw_rule', $rule);
-    respond(200, drawState($db));
+    respond(200, drawState($db, $body['day'] ?? null));
 }
 
 if (preg_match('#^/rounds/(\d+)/picks$#', $route, $m) && $method === 'POST') {
@@ -320,16 +355,22 @@ if (preg_match('#^/rounds/(\d+)/picks$#', $route, $m) && $method === 'POST') {
             ? "{$player} je već na ovom tiketu."
             : "Igrača {$player} je već izabrao {$duplicate['name']} {$when}. Isti igrač se ne bira dvaput za isto veče.");
     }
+    // Granica koju je admin već upisao u Formi dolazi sama, da se ne kuca dvaput.
+    $line = formaLineFor($db, (int) $round['number'], $catalogPlayer['id'] ?? null);
     try {
-        $db->prepare('INSERT INTO picks (round_id, friend_id, player_id, game_id, player, tip) VALUES (?, ?, ?, ?, ?, ?)')
-            ->execute([$round['id'], $friendId, $catalogPlayer['id'] ?? null, $gameId, $player, $tip]);
+        $db->prepare('INSERT INTO picks (round_id, friend_id, player_id, game_id, player, tip, line) VALUES (?, ?, ?, ?, ?, ?, ?)')
+            ->execute([$round['id'], $friendId, $catalogPlayer['id'] ?? null, $gameId, $player, $tip, $line]);
     } catch (PDOException $e) {
         if (($e->errorInfo[1] ?? null) === 1452) {
             fail(404, 'Prijatelj ne postoji.');
         }
         throw $e;
     }
-    respond(201, loadPick($db, (int) $db->lastInsertId()));
+    $pickId = (int) $db->lastInsertId();
+    if ($gameId !== null) {
+        markFirstPoints($db, $gameId);
+    }
+    respond(201, loadPick($db, $pickId));
 }
 
 if ($route === '/notifications' && $method === 'GET') {
@@ -383,6 +424,7 @@ if (preg_match('#^/picks/(\d+)/slip$#', $route, $m) && $method === 'PUT') {
 
 if (preg_match('#^/slips/(\d+)$#', $route, $m) && $method === 'PUT') {
     updateSlip($db, (int) $m[1], readJson());
+    notifySafely($db);
     respond(204);
 }
 
@@ -493,8 +535,7 @@ if (preg_match('#^/picks/(\d+)$#', $route, $m) && $method === 'DELETE') {
     }
     $day = scheduleDayOfGame(roundSchedule($db, (int) $pick['number']), $pick['game_id'] === null ? null : (int) $pick['game_id']);
     if (!$isAdmin && ($day['locked'] ?? false)) {
-        fail(409, 'Tiket za ' . dayAccusative($day['date']) . ' je zaključan u ' . substr($day['deadline'], 11)
-            . ', igrači za taj dan se više ne mogu mijenjati.');
+        fail(409, dayLockedMessage($day));
     }
     $db->prepare('DELETE FROM picks WHERE id = ?')->execute([$pick['id']]);
     respond(204);
@@ -506,6 +547,8 @@ if (preg_match('#^/picks/(\d+)/line$#', $route, $m) && $method === 'PUT') {
     $line = parseLine(readJson()['line'] ?? null);
     $db->beginTransaction();
     $db->prepare('UPDATE picks SET line = ? WHERE id = ?')->execute([$line, $pick['id']]);
+    // Ista granica se vidi i u Formi.
+    formaRememberLine($db, (int) $pick['number'], $pick['player_id'] === null ? null : (int) $pick['player_id'], $line);
     autoGradeRound($db, (int) $pick['round_id']);
     $db->commit();
     respond(200, ['pick' => loadPick($db, (int) $pick['id']), 'results' => roundResults($db, (int) $pick['round_id'])]);
@@ -529,6 +572,23 @@ if (preg_match('#^/picks/(\d+)$#', $route, $m) && $method === 'PUT') {
     $result = syncResultFromPicks($db, (int) $pick['round_id'], (int) $pick['friend_id']);
     $db->commit();
     respond(200, ['result' => $result]);
+}
+
+// Ručno zaključavanje / otključavanje (samo admin): {"day": "2026-10-08" | null (svi dani), "locked": true | false}.
+if (preg_match('#^/rounds/(\d+)/lock$#', $route, $m) && $method === 'PUT') {
+    $round = findRound($db, (int) $m[1]);
+    $body = readJson();
+    $day = $body['day'] ?? null;
+    if ($day !== null && (!is_string($day) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $day))) {
+        fail(422, 'Dan nije ispravan.');
+    }
+    $db->beginTransaction();
+    setDayLocks($db, $round, $day, (bool) ($body['locked'] ?? true));
+    $db->commit();
+    advanceRounds($db);
+    ensureSlips($db);
+    notifySafely($db);
+    respond(200, findRound($db, (int) $round['id']));
 }
 
 // Faza kola i rok za predaju: {"status": "open|locked|done", "deadline": "2026-10-09T18:45" | null}.

@@ -5,13 +5,13 @@ import { useSessionGuard } from './session.js'
 
 const RULES = [
   { id: 'all', label: 'Svih 6' },
-  { id: 'pause', label: 'Pauza jedno kolo', recommended: true },
+  { id: 'pause', label: 'Pauza jedno izvlačenje', recommended: true },
   { id: 'cycle', label: 'Fer krug' },
 ]
 const RULE_TEXT = {
-  all: 'Svih 6 je u bubnju svako kolo. Isti čovjek može biti izvučen više kola zaredom.',
-  pause: 'Ko je izvučen u prošlom kolu, pauzira jedno kolo. U bubnju je uvijek 4, pa izvlačenje ostaje neizvjesno.',
-  cycle: 'Niko ne bira drugi put dok svi ne dođu na red. Svako bira tačno jednom u 3 kola, ali je svako treće kolo unaprijed poznato.',
+  all: 'Svih 6 je u bubnju za svako izvlačenje. Isti čovjek može biti izvučen više puta zaredom.',
+  pause: 'Ko je izvučen u prošlom izvlačenju, pauzira jedno. Kad se kolo igra dva dana, izvučeni za prvi dan ne ulaze u bubanj za drugi. U bubnju je uvijek 4.',
+  cycle: 'Niko ne bira drugi put dok svi ne dođu na red. Svako bira tačno jednom u 3 izvlačenja.',
 }
 
 const SPIN_MS = 2200
@@ -45,6 +45,15 @@ function formatTime(value) {
   const [, month, day] = date.split('-').map(Number)
   return `${day}. ${month}. u ${time}`
 }
+
+const DAY_NAMES = ['nedjelja', 'ponedjeljak', 'utorak', 'srijeda', 'četvrtak', 'petak', 'subota']
+const DAY_ACCUSATIVE = ['nedjelju', 'ponedjeljak', 'utorak', 'srijedu', 'četvrtak', 'petak', 'subotu']
+const DAY_SHORT = ['ned', 'pon', 'uto', 'sri', 'čet', 'pet', 'sub']
+const weekday = (date) => new Date(`${date}T00:00`).getDay()
+// Dan izvlačenja: "petak", "za petak", "pet"; null za kolo bez rasporeda.
+const dayName = (date) => DAY_NAMES[weekday(date)]
+const dayAcc = (date) => DAY_ACCUSATIVE[weekday(date)]
+const dayShort = (date) => DAY_SHORT[weekday(date)]
 
 const lowerFirst = (text) => text.charAt(0).toLowerCase() + text.slice(1)
 const ballWord = (n) => (n === 1 ? 'lopta' : n >= 2 && n <= 4 ? 'lopte' : 'lopti')
@@ -80,6 +89,25 @@ export default function DrumPage() {
 
   const isAdmin = user?.role === 'admin'
   const busy = anim.phase !== 'idle'
+
+  async function selectDay(day) {
+    if (busy || day === draw.day) return
+    setError('')
+    try {
+      setDraw(await api(`/draw?day=${day}`))
+    } catch (dayError) {
+      setError(dayError.message)
+    }
+  }
+
+  async function skipDay(skip) {
+    setError('')
+    try {
+      setDraw(await api('/draw/skip', { method: 'POST', body: JSON.stringify({ roundId: draw.round.id, day: draw.day, skip }) }))
+    } catch (skipError) {
+      setError(skipError.message)
+    }
+  }
 
   async function animateDraw(request) {
     const ids = draw.people.filter((p) => p.status === 'in').map((p) => p.friendId)
@@ -117,23 +145,25 @@ export default function DrumPage() {
   }
 
   function drawNext() {
-    animateDraw(() => api('/draw', { method: 'POST', body: JSON.stringify({ roundId: draw.round.id }) }))
+    animateDraw(() => api('/draw', { method: 'POST', body: JSON.stringify({ roundId: draw.round.id, day: draw.day }) }))
   }
 
   function replace(slot, person) {
-    if (!window.confirm(`Izvući zamjenu za ${person.short}? On u ovom kolu neće birati 2 igrača.`)) return
+    const when = draw.day ? `za ${dayAcc(draw.day)}` : 'u ovom kolu'
+    if (!window.confirm(`Izvući zamjenu za ${person.short}? On ${when} neće birati 2 igrača.`)) return
     animateDraw(() =>
-      api('/draw/replace', { method: 'POST', body: JSON.stringify({ roundId: draw.round.id, slot }) }),
+      api('/draw/replace', { method: 'POST', body: JSON.stringify({ roundId: draw.round.id, day: draw.day, slot }) }),
     )
   }
 
   async function cancelDraw() {
-    if (!window.confirm(`Poništiti izvlačenje za kolo ${draw.round.number}? U istoriji ostaje zapisano da je poništeno.`)) {
+    const what = draw.day ? `za ${dayAcc(draw.day)} (kolo ${draw.round.number})` : `za kolo ${draw.round.number}`
+    if (!window.confirm(`Poništiti izvlačenje ${what}? U istoriji ostaje zapisano da je poništeno.`)) {
       return
     }
     setError('')
     try {
-      setDraw(await api('/draw/cancel', { method: 'POST', body: JSON.stringify({ roundId: draw.round.id }) }))
+      setDraw(await api('/draw/cancel', { method: 'POST', body: JSON.stringify({ roundId: draw.round.id, day: draw.day }) }))
     } catch (cancelError) {
       setError(cancelError.message)
     }
@@ -142,7 +172,7 @@ export default function DrumPage() {
   async function changeRule(rule) {
     setError('')
     try {
-      setDraw(await api('/draw/rule', { method: 'PUT', body: JSON.stringify({ rule }) }))
+      setDraw(await api('/draw/rule', { method: 'PUT', body: JSON.stringify({ rule, day: draw.day }) }))
     } catch (ruleError) {
       setError(ruleError.message)
     }
@@ -180,6 +210,8 @@ export default function DrumPage() {
             onReplace={replace}
             onCancel={cancelDraw}
             onRuleChange={changeRule}
+            onSelectDay={selectDay}
+            onSkip={skipDay}
           />
         )}
       </main>
@@ -187,10 +219,13 @@ export default function DrumPage() {
   )
 }
 
-function DrumContent({ draw, user, isAdmin, anim, busy, error, onDraw, onReplace, onCancel, onRuleChange }) {
-  const { round, people } = draw
+function DrumContent({ draw, user, isAdmin, anim, busy, error, onDraw, onReplace, onCancel, onRuleChange, onSelectDay, onSkip }) {
+  const { round, people, day } = draw
   const byId = Object.fromEntries(people.map((p) => [p.friendId, p]))
-  const current = draw.draws.filter((d) => d.roundNumber === round.number && !d.cancelledAt)
+  const days = draw.days ?? []
+  const dayInfo = days.find((d) => d.date === day) ?? null
+  const skipped = Boolean(dayInfo?.skipped)
+  const current = draw.draws.filter((d) => d.roundNumber === round.number && (d.day ?? null) === day && !d.cancelledAt)
   const active = current.filter((d) => !d.replacedAt).sort((a, b) => a.slot - b.slot)
   const inDrum = people.filter((p) => p.status === 'in')
   const roundDone = round.status === 'done'
@@ -200,12 +235,13 @@ function DrumContent({ draw, user, isAdmin, anim, busy, error, onDraw, onReplace
 
   let caption
   if (anim.phase === 'spinning') caption = <b className="font-semibold text-white">Bubanj se okreće…</b>
-  else if (complete) caption = `Izvlačenje za kolo ${round.number} je završeno.`
+  else if (complete) caption = day ? `Izvlačenje za ${dayAcc(day)} je završeno.` : `Izvlačenje za kolo ${round.number} je završeno.`
+  else if (skipped) caption = `Za ${dayAcc(day)} se ne izvlači.`
   else
     caption = (
       <>
-        U bubnju: <b className="font-semibold text-white">{inDrum.length}</b> {ballWord(inDrum.length)}. Izvučena lopta ne
-        vraća se u bubanj.
+        U bubnju{day ? ` za ${dayAcc(day)}` : ''}: <b className="font-semibold text-white">{inDrum.length}</b>{' '}
+        {ballWord(inDrum.length)}. Izvučena lopta ne vraća se u bubanj.
       </>
     )
 
@@ -251,9 +287,13 @@ function DrumContent({ draw, user, isAdmin, anim, busy, error, onDraw, onReplace
             disabled={busy || roundDone || current.length === 0}
             className="rounded-lg border border-line px-3 py-1.5 text-[13px] text-zinc-400 transition hover:text-white disabled:pointer-events-none disabled:opacity-40"
           >
-            Poništi izvlačenje
+            Poništi izvlačenje{day ? ` za ${dayAcc(day)}` : ''}
           </button>
         </section>
+      )}
+
+      {day && (
+        <DayPicker days={days} selected={day} busy={busy} byId={byId} onSelect={onSelectDay} />
       )}
 
       <section
@@ -296,8 +336,15 @@ function DrumContent({ draw, user, isAdmin, anim, busy, error, onDraw, onReplace
         <div className="flex min-w-0 flex-col gap-4.5 px-5 py-6">
           <div className="flex flex-col gap-1.5">
             <span className="font-display text-xs font-semibold uppercase tracking-[0.28em] text-accent">Ko bira 2 igrača</span>
-            <h2 className="font-display text-[40px] font-extrabold uppercase leading-[0.95] text-white">Kolo {round.number}</h2>
-            <p className="text-zinc-400">Igramo 2 tiketa po 4 igrača. Svako bira jednog, a dvojica izvučenih biraju po dva.</p>
+            <h2 className="font-display text-[40px] font-extrabold uppercase leading-[0.95] text-white">
+              Kolo {round.number}
+              {day && <span className="text-accent"> · {dayName(day)}</span>}
+            </h2>
+            <p className="text-zinc-400">
+              {day
+                ? `Tiket za ${dayAcc(day)} igra 8 igrača, 2 tiketa po 4. Svako bira jednog, a dvojica izvučenih biraju po dva. Rok ${dayShort(day)} u ${dayInfo.deadline.slice(11, 16)}.`
+                : 'Igramo 2 tiketa po 4 igrača. Svako bira jednog, a dvojica izvučenih biraju po dva.'}
+            </p>
           </div>
 
           <div className="grid gap-2.5">
@@ -334,6 +381,7 @@ function DrumContent({ draw, user, isAdmin, anim, busy, error, onDraw, onReplace
                   <div className="flex flex-col items-end gap-1.5">
                     <span className="whitespace-nowrap rounded-[5px] bg-neon/10 px-1.75 py-0.5 font-display text-[11px] font-bold uppercase tracking-[0.14em] text-neon">
                       {me ? 'Ti · 2 igrača' : '2 igrača'}
+                      {day ? ` · ${dayShort(day)}` : ''}
                     </span>
                     {isAdmin && !roundDone && (
                       <button
@@ -359,6 +407,9 @@ function DrumContent({ draw, user, isAdmin, anim, busy, error, onDraw, onReplace
 
           <DrawAction
             round={round}
+            day={day}
+            skipped={skipped}
+            onSkip={onSkip}
             isAdmin={isAdmin}
             busy={busy}
             activeCount={active.length}
@@ -381,7 +432,7 @@ function DrumContent({ draw, user, isAdmin, anim, busy, error, onDraw, onReplace
           <p className="text-sm text-zinc-400">{RULE_TEXT[draw.rule]}</p>
           <div className="flex flex-col overflow-hidden rounded-xl bg-surface ring-1 ring-line ring-inset">
             {people.map((person) => (
-              <PersonRow key={person.friendId} person={person} roundNumber={round.number} />
+              <PersonRow key={person.friendId} person={person} roundNumber={round.number} day={day} />
             ))}
           </div>
         </div>
@@ -390,10 +441,66 @@ function DrumContent({ draw, user, isAdmin, anim, busy, error, onDraw, onReplace
             <h2 className="font-display text-[22px] font-bold uppercase tracking-[0.03em] text-white">Istorija izvlačenja</h2>
             <span className="text-[13px] text-zinc-400">svako izvlačenje se čuva</span>
           </div>
-          <History draws={draw.draws} byId={byId} currentRound={round.number} />
+          <History draws={draw.draws} byId={byId} currentRound={round.number} currentDay={day} />
         </div>
       </section>
     </>
+  )
+}
+
+// Kolo koje se igra dva dana: kartica za svaki dan tiketa, sa izvučenima ili rokom.
+function DayPicker({ days, selected, busy, byId, onSelect }) {
+  return (
+    <section aria-label="Dan izvlačenja" className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,260px),1fr))] gap-2.5">
+      {days.map((day) => {
+        const active = day.date === selected
+        const done = day.drawn.length >= 2
+        const date = new Date(`${day.date}T00:00`)
+        const state = day.skipped
+          ? { label: 'ne izvlači se', tone: 'bg-white/6 text-zinc-400' }
+          : done
+            ? { label: 'izvučeno', tone: 'bg-neon/10 text-neon' }
+            : day.drawn.length
+              ? { label: '1 od 2', tone: 'bg-accent/12 text-accent' }
+              : { label: 'čeka', tone: 'bg-accent/12 text-accent' }
+        return (
+          <button
+            key={day.date}
+            type="button"
+            onClick={() => onSelect(day.date)}
+            disabled={busy}
+            aria-pressed={active}
+            className={`flex items-center gap-3 rounded-xl p-3 text-left transition disabled:cursor-wait ${
+              active
+                ? 'bg-[linear-gradient(90deg,rgba(255,106,19,0.12),transparent_80%)] bg-surface ring-[1.5px] ring-accent ring-inset'
+                : 'bg-surface ring-1 ring-line ring-inset hover:ring-white/16'
+            }`}
+          >
+            <span
+              className={`grid size-13 shrink-0 place-items-center rounded-[11px] leading-none ${
+                active ? 'bg-accent text-ink' : 'bg-surface-2 text-white ring-1 ring-line ring-inset'
+              }`}
+            >
+              <span className="text-center">
+                <b className="block font-display text-[22px] font-extrabold">{date.getDate()}.</b>
+                <small className="font-display text-[10px] font-bold uppercase tracking-[0.14em]">{dayShort(day.date)}</small>
+              </span>
+            </span>
+            <span className="min-w-0 flex-1">
+              <b className="block font-display text-[19px] font-bold uppercase tracking-[0.03em] text-white">
+                {dayName(day.date)} {date.getDate()}. {date.getMonth() + 1}.
+              </b>
+              <small className="block truncate text-[13px] text-zinc-400">
+                {day.drawn.length
+                  ? `Izvučeni: ${day.drawn.map((id) => byId[id]?.short ?? '?').join(' i ')}`
+                  : `rok ${day.deadline.slice(11, 16)}${day.skipped ? '' : ' · još nije izvučeno'}`}
+              </small>
+            </span>
+            <span className={`shrink-0 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold ${state.tone}`}>{state.label}</span>
+          </button>
+        )
+      })}
+    </section>
   )
 }
 
@@ -451,9 +558,22 @@ function Notice({ tone = 'info', children }) {
   )
 }
 
-function DrawAction({ round, isAdmin, busy, activeCount, inDrumCount, roundDone, complete, meDrawn, savedAt, onDraw }) {
+function DrawAction({ round, day, skipped, onSkip, isAdmin, busy, activeCount, inDrumCount, roundDone, complete, meDrawn, savedAt, onDraw }) {
+  const when = day ? `za ${dayAcc(day)}` : `u kolu ${round.number}`
   if (meDrawn && !isAdmin) {
-    return <Notice tone="me">Izvučen si! U kolu {round.number} biraš 2 igrača. Oznaka te čeka na tvom tiketu.</Notice>
+    return <Notice tone="me">Izvučen si! {day ? `Za ${dayAcc(day)} biraš` : `U kolu ${round.number} biraš`} 2 igrača. Oznaka te čeka na tvom tiketu.</Notice>
+  }
+  if (skipped) {
+    return (
+      <div className="flex flex-col gap-2.5">
+        <Notice>Za {dayAcc(day)} se ne izvlači: igra se jedan tiket, pa svako bira po jednog igrača.</Notice>
+        {isAdmin && !roundDone && (
+          <button type="button" onClick={() => onSkip(false)} disabled={busy} className="w-fit text-[13px] text-zinc-400 underline underline-offset-4 transition hover:text-white">
+            Ipak izvlačimo za {dayAcc(day)}
+          </button>
+        )}
+      </div>
+    )
   }
   if (complete) {
     return <Notice tone="ok">Sačuvano {savedAt}. Svi vide rezultat.</Notice>
@@ -464,24 +584,31 @@ function DrawAction({ round, isAdmin, busy, activeCount, inDrumCount, roundDone,
   if (isAdmin) {
     if (!inDrumCount && !busy) return <Notice>U bubnju nema nikoga za izvlačenje.</Notice>
     return (
-      <button
-        type="button"
-        onClick={onDraw}
-        disabled={busy}
-        className="inline-flex h-12.5 w-fit items-center justify-center gap-2.25 rounded-[10px] bg-accent px-5.5 font-display text-[17px] font-bold uppercase tracking-[0.12em] text-ink shadow-[0_14px_34px_-12px_rgba(255,106,19,0.7)] transition hover:brightness-110 disabled:pointer-events-none disabled:opacity-45"
-      >
-        {busy ? 'Izvlači se…' : activeCount === 0 ? 'Izvuci prvog' : 'Izvuci drugog'}
-      </button>
+      <div className="flex flex-col gap-2.5">
+        <button
+          type="button"
+          onClick={onDraw}
+          disabled={busy}
+          className="inline-flex h-12.5 w-fit items-center justify-center gap-2.25 rounded-[10px] bg-accent px-5.5 font-display text-[17px] font-bold uppercase tracking-[0.12em] text-ink shadow-[0_14px_34px_-12px_rgba(255,106,19,0.7)] transition hover:brightness-110 disabled:pointer-events-none disabled:opacity-45"
+        >
+          {busy ? 'Izvlači se…' : activeCount === 0 ? 'Izvuci prvog' : 'Izvuci drugog'}
+        </button>
+        {day && activeCount === 0 && !busy && (
+          <button type="button" onClick={() => onSkip(true)} className="w-fit text-[13px] text-zinc-400 underline underline-offset-4 transition hover:text-white">
+            Ne izvlačimo za ovaj dan (jedan tiket)
+          </button>
+        )}
+      </div>
     )
   }
   return activeCount ? (
     <Notice>Izvlačenje je u toku. Drugi izvučeni će se pojaviti ovdje.</Notice>
   ) : (
-    <Notice>Izvlačenje za kolo {round.number} još nije održano. Admin izvlači kad otvori kolo.</Notice>
+    <Notice>Izvlačenje {when} još nije održano. Admin izvlači prije roka tog dana.</Notice>
   )
 }
 
-function PersonRow({ person, roundNumber }) {
+function PersonRow({ person, roundNumber, day }) {
   const firstName = person.name.split(' ')[0]
   const chip = {
     in: { label: 'U bubnju', className: 'bg-accent/12 text-accent' },
@@ -490,7 +617,7 @@ function PersonRow({ person, roundNumber }) {
   }[person.status]
   const sub =
     person.status === 'drawn'
-      ? `izvučen u kolu ${roundNumber}`
+      ? day ? `izvučen za ${dayAcc(day)}` : `izvučen u kolu ${roundNumber}`
       : person.status === 'out'
         ? lowerFirst(person.reason ?? 'van bubnja')
         : 'čeka izvlačenje'
@@ -515,12 +642,13 @@ function PersonRow({ person, roundNumber }) {
   )
 }
 
-function History({ draws, byId, currentRound }) {
+function History({ draws, byId, currentRound, currentDay }) {
   const rounds = []
   for (const entry of draws) {
-    let group = rounds.find((r) => r.number === entry.roundNumber)
+    const day = entry.day ?? null
+    let group = rounds.find((r) => r.number === entry.roundNumber && r.day === day)
     if (!group) {
-      group = { number: entry.roundNumber, entries: [] }
+      group = { number: entry.roundNumber, day, entries: [] }
       rounds.push(group)
     }
     group.entries.push(entry)
@@ -547,13 +675,14 @@ function History({ draws, byId, currentRound }) {
             .reduce((acc, d) => ({ ...acc, [d.cancelledAt]: [...(acc[d.cancelledAt] ?? []), d] }), {}),
         )
         const last = active.reduce((latest, d) => (!latest || d.drawnAt > latest.drawnAt ? d : latest), null)
-        const isCurrent = group.number === currentRound
+        const isCurrent = group.number === currentRound && group.day === (currentDay ?? null)
         return (
-          <div key={group.number} className="grid grid-cols-[70px_minmax(0,1fr)] gap-x-3 gap-y-1 border-b border-line px-3.5 py-3 last:border-b-0">
+          <div key={`${group.number}-${group.day}`} className="grid grid-cols-[92px_minmax(0,1fr)] gap-x-3 gap-y-1 border-b border-line px-3.5 py-3 last:border-b-0">
             <span
               className={`pt-0.5 font-display text-[13px] font-bold uppercase tracking-[0.12em] ${isCurrent ? 'text-accent' : 'text-zinc-600'}`}
             >
               Kolo {group.number}
+              {group.day && ` · ${dayShort(group.day)}`}
             </span>
             <span className={`font-semibold ${active.length ? 'text-white' : 'text-zinc-600'}`}>
               {active.length ? active.map((d) => name(d.friendId)).join(' i ') : 'Nije izvučeno'}
