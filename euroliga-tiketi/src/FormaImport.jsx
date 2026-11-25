@@ -221,9 +221,9 @@ export default function FormaImport({ data, players, maxbetRows, onClose, onSave
       )}
 
       <HowTo hasRows={!!maxbetRows} onClose={onClose} />
-
+      {/* Traka za čuvanje; na telefonu stoji iznad donje trake sa stranicama. */}
       {maxbetRows && preview.status === 'ready' && (
-        <div className="fixed inset-x-0 bottom-0 z-20 border-t border-white/12 bg-surface/96 pt-3 pr-[max(16px,env(safe-area-inset-right,0px))] pb-[calc(12px+env(safe-area-inset-bottom,0px))] pl-[max(16px,env(safe-area-inset-left,0px))]">
+        <div className="fixed inset-x-0 bottom-0 z-20 max-sm:bottom-[calc(65px+env(safe-area-inset-bottom,0px))] max-sm:pb-3 border-t border-white/12 bg-surface/96 pt-3 pr-[max(16px,env(safe-area-inset-right,0px))] pb-[calc(12px+env(safe-area-inset-bottom,0px))] pl-[max(16px,env(safe-area-inset-left,0px))]">
           <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-x-4 gap-y-2.5">
             <p className="text-[13px] text-zinc-400">
               Označeno <b className="text-white tabular-nums">{picked.length}</b> granica

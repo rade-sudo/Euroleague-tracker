@@ -20,6 +20,7 @@ require __DIR__ . '/notifications.php';
 // FANTASY ISKLJUČEN dok ne ide live; fantasy.php se ni ne kopira u dist (vite.config.js).
 // require __DIR__ . '/fantasy.php';
 require __DIR__ . '/forma.php';
+require __DIR__ . '/injuries.php';
 require __DIR__ . '/stats.php';
 require __DIR__ . '/account.php';
 require __DIR__ . '/backups.php';

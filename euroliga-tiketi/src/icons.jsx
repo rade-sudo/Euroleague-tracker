@@ -126,3 +126,65 @@ export function TrophyIcon({ className }) {
     </Icon>
   )
 }
+
+// Ikonice donje trake na telefonu i menija naloga (tanje linije, kao u artifactu).
+export function TableIcon({ className }) {
+  return (
+    <Icon className={className} strokeWidth={1.8}>
+      <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
+      <path d="M3.5 9.5h17M9.5 9.5v10" />
+    </Icon>
+  )
+}
+
+export function DrumIcon({ className }) {
+  return (
+    <Icon className={className} strokeWidth={1.8}>
+      <ellipse cx="12" cy="7" rx="7.5" ry="3" />
+      <path d="M4.5 7v9c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3V7" />
+    </Icon>
+  )
+}
+
+export function StatsIcon({ className }) {
+  return (
+    <Icon className={className} strokeWidth={1.8}>
+      <path d="M5 19.5v-6M12 19.5V5M19 19.5v-10" />
+    </Icon>
+  )
+}
+
+export function FormIcon({ className }) {
+  return (
+    <Icon className={className} strokeWidth={1.8}>
+      <path d="M3.5 16.5l5-5 3.5 3.5 7.5-8" />
+      <path d="M15 7h4.5v4.5" />
+    </Icon>
+  )
+}
+
+export function CashIcon({ className }) {
+  return (
+    <Icon className={className} strokeWidth={1.8}>
+      <rect x="3" y="6.5" width="18" height="11" rx="2.5" />
+      <circle cx="12" cy="12" r="2.5" />
+    </Icon>
+  )
+}
+
+export function PlayersIcon({ className }) {
+  return (
+    <Icon className={className} strokeWidth={1.8}>
+      <circle cx="9" cy="8.5" r="3.2" />
+      <path d="M3.5 19c.6-3 2.9-4.8 5.5-4.8s4.9 1.8 5.5 4.8M15.5 5.6a3 3 0 0 1 0 5.8M17.5 14.5c1.6.6 2.7 2.2 3 4.5" />
+    </Icon>
+  )
+}
+
+export function LogoutIcon({ className }) {
+  return (
+    <Icon className={className} strokeWidth={1.8}>
+      <path d="M14 4.5H7a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h7M11 12h9.5M17 8.5l3.5 3.5-3.5 3.5" />
+    </Icon>
+  )
+}

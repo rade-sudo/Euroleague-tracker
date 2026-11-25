@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl https://www.euroleaguebasketball.net/*)",
+      "Bash(curl https://basketnews.com/*)"
+    ]
+  }
+}

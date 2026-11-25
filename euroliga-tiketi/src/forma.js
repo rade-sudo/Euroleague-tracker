@@ -11,6 +11,44 @@ const VS_FULL_GAMES = 4
 const HOME_FACTOR = 1.03
 const AWAY_FACTOR = 0.97
 const MIN_SD = 3
+// Odsutni saigrači: 3/4 njihovih minuta ide igračima iste pozicije, po minutama u sezoni.
+const SAME_POS_SHARE = 0.75
+const MAX_MINUTES = 34
+// Stvarni prosjek "bez njih" ulazi u projekciju tek od 3 takve utakmice.
+const WITHOUT_MIN_GAMES = 3
+// Nove minute nose nesigurnost: oscilacija +15%.
+const BOOST_SD = 1.15
+// "Maxbet zna nešto": Maxbet je granicu podigao iznad uobičajene (naša procjena granice, blizu njihovog računa)
+// za bar 3 poena, ili 20% kod većih granica, a odsutni saigrači to ne objašnjavaju. Niža granica se ne označava.
+const GUARD_GAP = 3
+const GUARD_SHARE = 0.2
+// Nijedna šansa preko 80%: formula ne zna sve.
+const MAX_CHANCE = 0.8
+const RATE_UNITS = { pts: 'poena', ast: 'asistencija', reb: 'skokova' }
+const surname = (name) => name.split(' ').slice(-1)[0]
+
+// Sigurno ne igra: Out na BasketNewsu, ili admin rekao "Ne igra". Samo takvi oslobađaju minute saigračima;
+// "nema ga na Maxbetu", "nije igrao zadnju" i upitni su samo oznaka na njemu.
+export const sureOut = (absence) => absence?.status === 'out' && (absence.source === 'basketnews' || absence.source === 'admin')
+
+// Koliko minuta igrač dobija jer saigrači iste pozicije sigurno ne igraju.
+// null ako nema odsutnih na njegovoj poziciji, ili ni sam ne igra.
+export function absenceBoost(player, teammates) {
+  if ((player.absence?.weight ?? 0) >= 0.5 || !(player.season.min > 0)) return null
+  const receives = (t) => !((t.absence?.weight ?? 0) >= 0.5) && t.season.min > 0
+  let minutes = 0
+  const names = []
+  for (const absent of teammates) {
+    if (absent.id === player.id || !sureOut(absent.absence) || !(absent.absence.min > 0) || absent.pos !== player.pos) continue
+    const group = teammates.filter((t) => t.pos === absent.pos && receives(t))
+    const total = group.reduce((sum, t) => sum + t.season.min, 0)
+    if (!total) continue
+    minutes += (SAME_POS_SHARE * absent.absence.min * player.season.min) / total
+    names.push(surname(absent.name))
+  }
+  minutes = Math.min(minutes, Math.max(0, MAX_MINUTES - player.season.min))
+  return minutes >= 0.5 ? { minutes, names } : null
+}
 
 // Kolone reda igrača na širem ekranu (zaglavlje tima i red moraju biti iste).
 export const FORMA_GRID = 'min-[861px]:grid-cols-[minmax(170px,1.35fr)_1.25fr_1fr_1fr_96px_132px]'
@@ -21,7 +59,7 @@ export const fix1 =(value) => (Math.round(value * 10) / 10).toFixed(1)
 const average = (values) => values.reduce((sum, v) => sum + v, 0) / values.length
 
 // Projekcija za poene, asistencije ili skokove, sa koracima za prikaz.
-export function project(player, key, defense) {
+export function project(player, key, defense, boost = null) {
   let played = player.last10
     .slice(0, 5)
     .map((game, i) => ({ game, w: WEIGHTS[i] }))
@@ -50,22 +88,35 @@ export function project(player, key, defense) {
   const defF = key === 'pts' ? def : 1 + (def - 1) * 0.5
   const afterMin = base * minF
   const afterHa = afterMin * haF
-  const value = afterHa * defF
+  const afterDef = afterHa * defF
+  const steps = [
+    { label: 'Baza (forma, sezona, protiv njih)', value: base },
+    { label: `Minute (${fix1(min5)} zadnjih 5 / ${fix1(player.season.min)} sezona)`, delta: afterMin - base },
+    { label: player.home ? 'Domaćin' : 'Gost', delta: afterHa - afterMin },
+    { label: `Odbrana ${player.opp} prema poziciji ${player.pos}`, delta: afterDef - afterHa },
+  ]
 
-  return {
-    value,
-    form,
-    seasonAvg,
-    vs,
-    n,
-    min5,
-    steps: [
-      { label: 'Baza (forma, sezona, protiv njih)', value: base },
-      { label: `Minute (${fix1(min5)} zadnjih 5 / ${fix1(player.season.min)} sezona)`, delta: afterMin - base },
-      { label: player.home ? 'Domaćin' : 'Gost', delta: afterHa - afterMin },
-      { label: `Odbrana ${player.opp} prema poziciji ${player.pos}`, delta: value - afterHa },
-    ],
+  // Odsutni saigrači: nove minute × njegov učinak po minuti, pa (od 3 utakmice) i stvarni prosjek bez njih.
+  let value = afterDef
+  if (boost) {
+    const rate = player.season[key] / player.season.min
+    const afterBoost = afterDef + boost.minutes * rate
+    const who = boost.names.join(' i ')
+    steps.push({
+      label: `${boost.names.length > 1 ? 'Ne igraju' : 'Ne igra'} ${who}: +${fix1(boost.minutes)} min × ${rate.toFixed(2)} ${RATE_UNITS[key]} po minuti`,
+      delta: afterBoost - afterDef,
+      absence: true,
+    })
+    value = afterBoost
+    const without = player.without
+    if (without && without.n >= WITHOUT_MIN_GAMES) {
+      value = 0.5 * afterBoost + 0.5 * without[key]
+      const games = without.n % 10 >= 2 && without.n % 10 <= 4 && (without.n % 100 < 12 || without.n % 100 > 14) ? 'utakmice' : 'utakmica'
+      steps.push({ label: `Bez njih (${without.n} ${games}): ${fix1(without[key])} ${RATE_UNITS[key]}`, delta: value - afterBoost, absence: true })
+    }
   }
+
+  return { value, form, seasonAvg, vs, n, min5, steps }
 }
 
 // Okvirna granica dok admin ne upiše Maxbet: 60% sezona + 40% forma, zaokruženo na .5.
@@ -88,8 +139,11 @@ function phi(z) {
 }
 
 // Šansa da prođe tip: "+" ako je projekcija iznad granice, inače "−".
-export function chance(line, projection, sd) {
-  const over = 1 - phi((line - projection) / sd)
+// shrink ("Maxbet zna nešto"): šansa se prepolovi prema 50%. Nikad preko 80%.
+export function chance(line, projection, sd, shrink = false) {
+  let over = 1 - phi((line - projection) / sd)
+  if (shrink) over = 0.5 + (over - 0.5) / 2
+  over = Math.min(MAX_CHANCE, Math.max(1 - MAX_CHANCE, over))
   const tip = over >= 0.5 ? '+' : '−'
   return { over, tip, pct: Math.round((tip === '+' ? over : 1 - over) * 100), sd }
 }
@@ -99,23 +153,62 @@ export const hitsUnder = (games, line) => games.filter((game) => !game.dnp && ga
 export const playedCount = (games) => games.filter((game) => !game.dnp).length
 
 // Igrač sa projekcijama, granicom (Maxbet ili procjena), šansom i oznakama.
-export function enrichPlayer(player, defense, doubleTeams) {
+// Oznaka igrača koji ni sam ne igra (ili je upitan) i odakle se zna.
+const ABSENCE_LABELS = { out: 'Ne igra', doubtful: 'Vjerovatno ne igra', uncertain: 'Upitan', maybe: 'Upitan' }
+export const ABSENCE_SOURCES = {
+  basketnews: 'BasketNews',
+  maxbet: 'nema ga na Maxbetu',
+  dnp: 'nije igrao zadnju',
+  admin: 'admin',
+}
+function absenceFlag(absence) {
+  if (!absence) return null
+  const source = ABSENCE_SOURCES[absence.source]
+  if (absence.weight >= 0.75) {
+    // Bez službene potvrde (Maxbet, DNP) piše "vjerovatno".
+    const label = absence.source === 'maxbet' || absence.source === 'dnp' ? 'Vjerovatno ne igra' : ABSENCE_LABELS[absence.status]
+    return { tone: 'down', label: `${label} · ${source}` }
+  }
+  if (absence.weight > 0) return { tone: 'warn', label: `Upitan · ${source}` }
+  return absence.status === 'expected' ? { tone: '', label: 'Bio povrijeđen · igra' } : null
+}
+
+// teammates: svi igrači njegovog tima u kolu (za odsutne saigrače).
+export function enrichPlayer(player, defense, doubleTeams, teammates = []) {
+  const boost = absenceBoost(player, teammates)
   const proj = {
-    pts: project(player, 'pts', defense),
-    ast: project(player, 'ast', defense),
-    reb: project(player, 'reb', defense),
+    pts: project(player, 'pts', defense, boost),
+    ast: project(player, 'ast', defense, boost),
+    reb: project(player, 'reb', defense, boost),
   }
   const est = estimateLine(player, proj.pts.form)
   // offer === false: Maxbet je uvezen za utakmicu, a igrača nema u ponudi.
   // Tada se granica i šansa ne prikazuju (računaju se iz procjene samo za ekran uvoza).
   const offered = player.offer !== false
   const line = player.line ?? est
-  const sd = pointsSd(player)
+  const sd = pointsSd(player) * (boost ? BOOST_SD : 1)
+  // Maxbet granica daleko od projekcije: kladionica zna nešto što mi ne znamo.
+  const gap = player.line !== null ? player.line - est : 0
+  const guard = !boost && gap >= Math.max(GUARD_GAP, GUARD_SHARE * est)
   const last5 = player.last10.slice(0, 5)
   const dnp5 = last5.filter((game) => game.dnp).length
   const def = defense[player.opp]?.[player.pos] ?? 1
 
   const flags = []
+  const own = absenceFlag(player.absence)
+  if (own) flags.push(own)
+  if (boost) {
+    flags.push({ tone: 'abs', label: `${boost.names.length > 1 ? 'Ne igraju' : 'Ne igra'}: ${boost.names.join(', ')}` })
+    flags.push({ tone: 'up', label: `+${Math.round(boost.minutes)} min` })
+  }
+  if (guard) {
+    // Kratko, da stane u kolonu igrača; puni opis je u title i u detalju igrača.
+    flags.push({
+      tone: 'warn',
+      label: `Maxbet zna nešto · +${fix1(gap)}`,
+      title: `Maxbet granica ${player.line} je ${fix1(gap)} poena iznad uobičajene (naša procjena ${est})`,
+    })
+  }
   if (proj.pts.min5 >= player.season.min + 3) flags.push({ tone: 'up', label: 'Minute ↑' })
   if (proj.pts.min5 <= player.season.min - 3) flags.push({ tone: 'down', label: 'Minute ↓' })
   if (dnp5) flags.push({ tone: 'warn', label: `Nije igrao ${dnp5}/${last5.length}` })
@@ -131,7 +224,11 @@ export function enrichPlayer(player, defense, doubleTeams) {
     line,
     offered,
     lineSrc: player.line !== null ? 'maxbet' : offered ? 'procjena' : 'nema',
-    chance: chance(line, proj.pts.value, sd),
+    chance: chance(line, proj.pts.value, sd, guard),
+    boost,
+    guard,
+    // Ne igra ili je upitan: ne nudi se u "Najbolje šanse kola".
+    out: (player.absence?.weight ?? 0) >= 0.5,
     formPct: player.season.pts > 0 ? proj.pts.form / player.season.pts - 1 : 0,
     flags,
   }

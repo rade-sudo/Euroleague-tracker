@@ -20,6 +20,7 @@ require __DIR__ . '/draws.php';
 require __DIR__ . '/players.php';
 require __DIR__ . '/schedule.php';
 require __DIR__ . '/forma.php';
+require __DIR__ . '/injuries.php';
 
 function fail(int $status, string $message): never
 {

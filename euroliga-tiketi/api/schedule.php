@@ -481,4 +481,14 @@ function syncEuroleague(PDO $db): void
         }
         error_log((string) $e);
     }
+
+    // Spisak povreda sa BasketNewsa (par puta dnevno), za odsutne saigrače u Formi.
+    try {
+        syncInjuries($db);
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        error_log((string) $e);
+    }
 }

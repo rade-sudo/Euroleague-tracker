@@ -369,6 +369,7 @@ function formaPayload(PDO $db, array $user, ?int $roundNumber): array
         }
     }
     $out = [];
+    $gameRows = [];
     foreach ($players as $player) {
         $team = $player['club_code'];
         $cutoff = $start[$team];
@@ -420,6 +421,7 @@ function formaPayload(PDO $db, array $user, ?int $roundNumber): array
                 break;
             }
         }
+        $gameRows[(int) $player['id']] = $currentByGame;
 
         $out[] = [
             'id' => (int) $player['id'],
@@ -442,6 +444,7 @@ function formaPayload(PDO $db, array $user, ?int $roundNumber): array
             'h2h' => $h2h,
         ];
     }
+    [$out, $injuredOther] = formaAbsences($db, $season, $roundNumber, $out, $players, $gameRows, $teamGames, $start);
 
     return $base + [
         'round' => $roundNumber,
@@ -459,7 +462,187 @@ function formaPayload(PDO $db, array $user, ?int $roundNumber): array
         'players' => $out,
         'defense' => (object) ($games ? formaDefense($db, $season, min(array_column($games, 'starts_at'))) : []),
         'double' => formaDoubleTeams($db, $season, $games),
+        // Spisak povreda: kad je pročitan, i igrači sa spiska bez minuta u sezoni (po timu).
+        'injuries' => injuryHealth($db) + ['other' => (object) $injuredOther],
     ];
+}
+
+/* ---------- Odsutni saigrači ---------- */
+
+const FORMA_ABSENCE_WEIGHTS = ['out' => 1.0, 'doubtful' => 0.75, 'uncertain' => 0.5, 'maybe' => 0.5, 'expected' => 0.0, 'in' => 0.0];
+// Redovan igrač: toliko minuta po utakmici, ili granica u većini kola sa uvezenim Maxbetom.
+const FORMA_REGULAR_MINUTES = 18;
+const FORMA_REGULAR_LINE_ROUNDS = 3;
+const FORMA_REGULAR_LINE_SHARE = 0.6;
+
+// Adminove oznake za kolo: [playerId => in|maybe|out]. Prazno dok migracija 016 nije pokrenuta.
+function formaAbsenceOverrides(PDO $db, string $season, int $round): array
+{
+    try {
+        $stmt = $db->prepare('SELECT player_id, status FROM forma_absences WHERE season = ? AND round = ?');
+        $stmt->execute([$season, $round]);
+        return array_map('strval', $stmt->fetchAll(PDO::FETCH_KEY_PAIR));
+    } catch (PDOException $e) {
+        error_log($e->getMessage());
+        return [];
+    }
+}
+
+// Igrači sa granicom u većini kola u kojima je Maxbet uvezen za njihov tim: [playerId => true].
+function formaRegularsByLines(PDO $db, string $season, int $round): array
+{
+    try {
+        $stmt = $db->prepare(
+            'SELECT o.round, g.home_code, g.away_code FROM forma_offers o JOIN games g ON g.id = o.game_id
+             WHERE o.season = ? AND o.round < ?'
+        );
+        $stmt->execute([$season, $round]);
+    } catch (PDOException $e) {
+        error_log($e->getMessage());
+        return [];
+    }
+    $teamRounds = [];
+    foreach ($stmt as $row) {
+        $teamRounds[$row['home_code']][(int) $row['round']] = true;
+        $teamRounds[$row['away_code']][(int) $row['round']] = true;
+    }
+    $stmt = $db->prepare(
+        'SELECT l.player_id, l.round, p.club_code FROM forma_lines l JOIN players p ON p.id = l.player_id
+         WHERE l.season = ? AND l.round < ?'
+    );
+    $stmt->execute([$season, $round]);
+    $lineRounds = [];
+    foreach ($stmt as $row) {
+        if (isset($teamRounds[$row['club_code']][(int) $row['round']])) {
+            $lineRounds[(int) $row['player_id']][(int) $row['round']] = true;
+            $lineRounds[(int) $row['player_id']]['team'] = $row['club_code'];
+        }
+    }
+    $out = [];
+    foreach ($lineRounds as $playerId => $rounds) {
+        $offeredRounds = count($teamRounds[$rounds['team']] ?? []);
+        if ($offeredRounds >= FORMA_REGULAR_LINE_ROUNDS && (count($rounds) - 1) / $offeredRounds >= FORMA_REGULAR_LINE_SHARE) {
+            $out[$playerId] = true;
+        }
+    }
+    return $out;
+}
+
+// Ko ne igra (ili je upitan) i koliko minuta oslobađa; izvori po važnosti: admin, BasketNews,
+// nema ga na Maxbetu (redovan), nije igrao zadnju utakmicu (redovan).
+// Svakom igraču dodaje "absence" (ili null) i "without": kako je igrao kad ovi odsutni nisu igrali.
+// Vraća [players, igrači sa spiska povreda bez minuta u sezoni po timu].
+function formaAbsences(PDO $db, string $season, int $round, array $out, array $players, array $gameRows, array $teamGames, array $start): array
+{
+    $injuries = injuryReports($db);
+    $overrides = formaAbsenceOverrides($db, $season, $round);
+    $regularByLines = formaRegularsByLines($db, $season, $round);
+
+    foreach ($out as &$player) {
+        $id = $player['id'];
+        $last5 = array_slice($player['last10'], 0, 5);
+        $min5 = $last5 ? round(array_sum(array_column($last5, 'min')) / count($last5), 1) : 0.0;
+        $regular = $player['season']['min'] >= FORMA_REGULAR_MINUTES || isset($regularByLines[$id]);
+        $report = $injuries[$id] ?? null;
+        $absence = null;
+        if (isset($overrides[$id])) {
+            $absence = ['status' => $overrides[$id], 'source' => 'admin', 'comment' => $report['comment'] ?? ''];
+        } elseif ($report !== null) {
+            $absence = ['status' => $report['status'], 'source' => 'basketnews', 'comment' => $report['comment']];
+        } elseif ($player['offer'] === false && $regular) {
+            $absence = ['status' => 'out', 'source' => 'maxbet', 'comment' => ''];
+        } elseif ($regular && ($player['last10'][0]['dnp'] ?? false)) {
+            $absence = ['status' => 'out', 'source' => 'dnp', 'comment' => ''];
+        }
+        if ($absence !== null) {
+            $absence['weight'] = FORMA_ABSENCE_WEIGHTS[$absence['status']];
+            // Minute koje oslobađa: prosjek zadnjih 5 utakmica tima (DNP = 0); ko već dugo ne igra, oslobađa 0.
+            $absence['min'] = $min5;
+        }
+        $player['absence'] = $absence;
+        $player['without'] = null;
+    }
+    unset($player);
+
+    // "Bez njih": utakmice sezone u kojima nije igrao nijedan od sigurno odsutnih.
+    $absentByTeam = [];
+    foreach ($out as $player) {
+        // Samo sigurni (Out na BasketNewsu ili admin), kao i za minute u Formi.
+        $a = $player['absence'];
+        if ($a !== null && $a['status'] === 'out' && in_array($a['source'], ['basketnews', 'admin'], true) && $a['min'] > 0) {
+            $absentByTeam[$player['team']][] = $player['id'];
+        }
+    }
+    foreach ($out as &$player) {
+        $absent = array_diff($absentByTeam[$player['team']] ?? [], [$player['id']]);
+        // Ko ni sam ne igra, ne treba mu "bez njih".
+        if (!$absent || ($player['absence']['weight'] ?? 0) >= 0.5) {
+            continue;
+        }
+        $games = [];
+        foreach ($teamGames[$player['team']] ?? [] as $game) {
+            $code = (int) $game['game_code'];
+            if ($game['starts_at'] >= $start[$player['team']]) {
+                continue;
+            }
+            foreach ($absent as $otherId) {
+                if ((int) ($gameRows[$otherId][$code]['seconds'] ?? 0) > 0) {
+                    continue 2;
+                }
+            }
+            $row = $gameRows[$player['id']][$code] ?? null;
+            if ($row !== null && (int) $row['seconds'] > 0) {
+                $games[] = formaGameLine($row);
+            }
+        }
+        if ($games) {
+            $n = count($games);
+            $player['without'] = ['n' => $n] + array_map(
+                fn (string $key) => round(array_sum(array_column($games, $key)) / $n, 1),
+                ['pts' => 'pts', 'ast' => 'ast', 'reb' => 'reb', 'min' => 'min']
+            );
+        }
+    }
+    unset($player);
+
+    // Sa spiska povreda, a bez minuta u sezoni (juniori, dugo povrijeđeni): samo da se vidi u Formi.
+    $inForma = array_fill_keys(array_column($out, 'id'), true);
+    $other = [];
+    foreach ($players as $player) {
+        $report = $injuries[(int) $player['id']] ?? null;
+        if ($report !== null && !isset($inForma[(int) $player['id']])) {
+            $other[$player['club_code']][] = ['name' => $player['name'], 'status' => $report['status']];
+        }
+    }
+    return [$out, $other];
+}
+
+// Admin: {"round": 14, "playerId": 40, "status": "in" | "maybe" | "out" | null (vrati izvore)}.
+function formaSaveAbsence(PDO $db, array $body): array
+{
+    $round = formaRoundNumber($body['round'] ?? null);
+    $player = findPlayerById($db, $body['playerId'] ?? null);
+    $status = $body['status'] ?? null;
+    if ($status !== null && !in_array($status, ['in', 'maybe', 'out'], true)) {
+        fail(422, 'Status mora biti igra, upitan ili ne igra.');
+    }
+    try {
+        if ($status === null) {
+            $db->prepare('DELETE FROM forma_absences WHERE season = ? AND round = ? AND player_id = ?')
+                ->execute([currentSeasonCode(), $round, $player['id']]);
+        } else {
+            $db->prepare(
+                'INSERT INTO forma_absences (season, round, player_id, status, updated_at) VALUES (?, ?, ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE status = VALUES(status), updated_at = VALUES(updated_at)'
+            )->execute([currentSeasonCode(), $round, $player['id'], $status, date('Y-m-d H:i:s')]);
+        }
+    } catch (PDOException $e) {
+        if ($e->getCode() === '42S02') {
+            fail(503, 'Pokreni api/migrations/016_odsutni.sql nad bazom.');
+        }
+        throw $e;
+    }
+    return ['playerId' => $player['id'], 'status' => $status];
 }
 
 /* ---------- Granice ---------- */
@@ -848,6 +1031,12 @@ function handleFormaRoute(PDO $db, array $user, string $method, string $route): 
             fail(403, 'Granice upisuje samo admin.');
         }
         respond(200, formaSaveLine($db, readJson()));
+    }
+    if ($route === '/forma/absence' && $method === 'PUT') {
+        if ($user['role'] !== 'admin') {
+            fail(403, 'Odsutne igrače označava samo admin.');
+        }
+        respond(200, formaSaveAbsence($db, readJson()));
     }
     if ($route === '/forma/maxbet' && $method === 'POST') {
         if ($user['role'] !== 'admin') {

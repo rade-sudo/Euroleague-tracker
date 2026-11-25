@@ -7,6 +7,7 @@ const FLAG_TONES = {
   up: 'bg-neon/8 text-neon',
   down: 'bg-rose-500/10 text-rose-400',
   warn: 'bg-gold/10 text-gold',
+  abs: 'bg-violet-400/12 text-violet-300',
   '': 'bg-white/5 text-zinc-400',
 }
 const shortDate = (date) => {
@@ -133,7 +134,11 @@ export default function FormaPlayer({ player, open, onToggle, opponentName, isAd
             {player.flags.length > 0 && (
               <span className="mt-1 flex flex-wrap gap-1">
                 {player.flags.map((flag) => (
-                  <span key={flag.label} className={`rounded px-1.5 py-px text-[10.5px] font-semibold whitespace-nowrap ${FLAG_TONES[flag.tone]}`}>
+                  <span
+                    key={flag.label}
+                    title={flag.title}
+                    className={`max-w-full rounded px-1.5 py-px text-[10.5px] leading-snug font-semibold wrap-break-word ${FLAG_TONES[flag.tone]}`}
+                  >
                     {flag.label}
                   </span>
                 ))}
@@ -374,8 +379,8 @@ function PlayerDetail({ player, opponentName, isAdmin, onSaveLine }) {
         </div>
         <div className="flex flex-col gap-px overflow-hidden rounded-[9px] bg-line">
           {pts.steps.map((s) => (
-            <div key={s.label} className="flex justify-between gap-2.5 bg-surface px-2.5 py-1.75 text-[13px]">
-              <span className="text-zinc-400">{s.label}</span>
+            <div key={s.label} className={`flex justify-between gap-2.5 px-2.5 py-1.75 text-[13px] ${s.absence ? 'bg-violet-400/7' : 'bg-surface'}`}>
+              <span className={s.absence ? 'text-violet-300' : 'text-zinc-400'}>{s.label}</span>
               {s.delta === undefined ? (
                 <b className="font-semibold text-white tabular-nums">{fix1(s.value)}</b>
               ) : (
@@ -446,6 +451,12 @@ function Verdict({ player, isAdmin, onSaveLine }) {
           oscilacija ±<b className="text-white">{fix1(c.sd)}</b>
         </span>
       </div>
+      {player.guard && (
+        <p className="rounded-md bg-gold/8 px-2.5 py-2 text-xs leading-relaxed text-gold">
+          Maxbet je granicu podigao iznad uobičajene (naša procjena {player.est}), a ne znamo zašto: povreda saigrača, nova
+          uloga, odmor. Šansa je prepolovljena prema 50%. Ako znaš ko ne igra, označi ga u „Ko ne igra“.
+        </p>
+      )}
       {isAdmin && <LineEditor key={player.line} player={player} onSaveLine={onSaveLine} />}
       <p className="text-xs leading-relaxed text-zinc-500">
         {player.lineSrc === 'maxbet'
