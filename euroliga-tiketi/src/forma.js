@@ -292,3 +292,22 @@ export function enrichRound(data) {
   for (const player of data.players) byTeam.set(player.team, [...(byTeam.get(player.team) ?? []), player])
   return data.players.map((player) => enrichPlayer(player, data.defense, doubleTeams, byTeam.get(player.team)))
 }
+
+// Tipovi PS / PA / PAS: projekcija zbira i koliko zbir oscilira (zadnjih 10 u kojima je igrao).
+const STAT_KEYS = { pts: ['pts'], ps: ['pts', 'reb'], pa: ['pts', 'ast'], pas: ['pts', 'ast', 'reb'] }
+export const statProjection = (player, stat) => STAT_KEYS[stat].reduce((sum, key) => sum + player.proj[key].value, 0)
+
+function statSd(player, stat) {
+  const values = player.last10.filter((game) => !game.dnp).map((game) => STAT_KEYS[stat].reduce((sum, key) => sum + game[key], 0))
+  const base =
+    values.length < 3
+      ? Math.max(MIN_SD, statProjection(player, stat) * 0.35)
+      : Math.max(MIN_SD, Math.sqrt(average(values.map((v) => (v - average(values)) ** 2))))
+  return base * (player.boost ? BOOST_SD : 1)
+}
+
+// Šansa po Formi za tip sa tiketa: poeni (i manja / veća granica) ili zbir, prema datoj granici.
+export function formaForTip(player, stat, line) {
+  if (stat === 'pts') return chance(line, player.proj.pts.value, player.chance.sd)
+  return chance(line, statProjection(player, stat), statSd(player, stat))
+}

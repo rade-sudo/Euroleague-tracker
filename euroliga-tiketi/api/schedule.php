@@ -199,7 +199,8 @@ function fillPickStats(PDO $db, string $season): array
         $byGame[(int) $row['game_code']][] = $row;
     }
 
-    $update = $db->prepare('UPDATE picks SET points = ?, did_play = ? WHERE id = ?');
+    // Skokovi i asistencije za tipove PS / PA / PAS (migracija 018).
+    $update = $db->prepare('UPDATE picks SET points = ?, assists = ?, rebounds = ?, did_play = ? WHERE id = ?');
     $rounds = [];
     foreach ($byGame as $gameCode => $picks) {
         $box = fetchJson(sprintf(EUROLEAGUE_BOXSCORE_URL, $season, $gameCode), 15);
@@ -211,6 +212,8 @@ function fillPickStats(PDO $db, string $season): array
                 $lines[(string) ($entry['player']['person']['code'] ?? '')] = [
                     'points' => $points,
                     'seconds' => (int) ($entry['stats']['timePlayed'] ?? 0),
+                    'assists' => (int) ($entry['stats']['assistances'] ?? 0),
+                    'rebounds' => (int) ($entry['stats']['totalRebounds'] ?? 0),
                 ];
                 $total += $points;
             }
@@ -222,7 +225,13 @@ function fillPickStats(PDO $db, string $season): array
         foreach ($picks as $pick) {
             $line = $lines[$pick['player_code']] ?? null;
             $played = $line !== null && $line['seconds'] > 0;
-            $update->execute([$played ? min($line['points'], 255) : null, (int) $played, $pick['id']]);
+            $update->execute([
+                $played ? min($line['points'], 255) : null,
+                $played ? min($line['assists'], 255) : null,
+                $played ? min($line['rebounds'], 255) : null,
+                (int) $played,
+                $pick['id'],
+            ]);
             $rounds[(int) $pick['round_id']] = true;
         }
     }
@@ -285,17 +294,47 @@ function checkFirstScorers(PDO $db, string $season): array
     return array_keys($changed);
 }
 
-function isUnderTip(string $tip): bool
+// Tipovi sa tiketa: "+" / "-" (poeni prema Maxbet granici), "<+" "<-" ">+" ">-" (poeni prema manjoj ili većoj
+// granici), "PS+" "PS-" (poeni + skokovi), "PA+" "PA-" (poeni + asistencije), "PAS+" "PAS-" (sva tri).
+// Isto pravilo je u src/tips.js. Nepoznat tekst (stari tiketi) = poeni, minus ako počinje minusom.
+// plain: obični + / −, jedini vezani za granicu iz Forme i uvoz sa Maxbeta.
+function parseTip(string $tip): array
 {
-    return str_starts_with($tip, '-') || str_starts_with($tip, '−');
+    if (preg_match('/^\s*(PAS|PS|PA|<|>)?\s*([+\-−–])/iu', $tip, $m)) {
+        $kind = strtoupper($m[1] ?? '');
+        $stat = in_array($kind, ['PAS', 'PS', 'PA'], true) ? strtolower($kind) : 'pts';
+        $alt = in_array($kind, ['<', '>'], true) ? $kind : null;
+        $under = $m[2] !== '+';
+        return ['stat' => $stat, 'alt' => $alt, 'under' => $under, 'plain' => $stat === 'pts' && $alt === null, 'code' => ($kind ?: '') . ($under ? '-' : '+')];
+    }
+    return ['stat' => 'pts', 'alt' => null, 'under' => false, 'plain' => true, 'code' => null];
 }
 
-// Prvi poeni na meču (Maxbet akcija) = „+“ je odmah prošao, i dok utakmica traje.
-// Nije igrao = prošao. „+“ traži više poena od granice (15.5 → 16), „−“ manje.
-// Bez granice nema ocjene; null znači da se još ne zna.
-function lineVerdict(?string $line, ?int $points, ?bool $didPlay, string $tip, bool $firstPoints = false): ?bool
+function isUnderTip(string $tip): bool
 {
-    if ($firstPoints && !isUnderTip($tip)) {
+    return parseTip($tip)['under'];
+}
+
+// Vrijednost koja se poredi sa granicom: poeni, ili zbir za PS / PA / PAS (null dok se ne zna).
+function tipValue(array $tip, ?int $points, ?int $assists, ?int $rebounds): ?int
+{
+    if ($points === null) {
+        return null;
+    }
+    $parts = ['pts' => [], 'ps' => [$rebounds], 'pa' => [$assists], 'pas' => [$assists, $rebounds]][$tip['stat']];
+    if (in_array(null, $parts, true)) {
+        return null;
+    }
+    return $points + array_sum($parts);
+}
+
+// Prvi poeni na meču (Maxbet akcija) = poeni „+“ (i manja / veća plus) je odmah prošao, i dok utakmica traje.
+// Nije igrao = prošao. „+“ traži više od granice (15.5 → 16), „−“ manje; za PS / PA / PAS se gleda zbir.
+// Bez granice nema ocjene; null znači da se još ne zna.
+function lineVerdict(?string $line, ?int $points, ?bool $didPlay, string $tip, bool $firstPoints = false, ?int $assists = null, ?int $rebounds = null): ?bool
+{
+    $parsed = parseTip($tip);
+    if ($firstPoints && $parsed['stat'] === 'pts' && !$parsed['under']) {
         return true;
     }
     if ($didPlay === null) {
@@ -304,10 +343,11 @@ function lineVerdict(?string $line, ?int $points, ?bool $didPlay, string $tip, b
     if (!$didPlay) {
         return true;
     }
-    if ($line === null) {
+    $value = tipValue($parsed, $points, $assists, $rebounds);
+    if ($line === null || $value === null) {
         return null;
     }
-    return isUnderTip($tip) ? $points < (float) $line : $points > (float) $line;
+    return $parsed['under'] ? $value < (float) $line : $value > (float) $line;
 }
 
 function autoGradeFromRound(PDO $db): int
@@ -326,7 +366,7 @@ function autoGradeRound(PDO $db, int $roundId): void
     }
 
     $stmt = $db->prepare(
-        "SELECT id, friend_id, tip, line, points, did_play, first_points, hit FROM picks
+        "SELECT id, friend_id, tip, line, points, assists, rebounds, did_play, first_points, hit FROM picks
          WHERE round_id = ? AND (graded_by IS NULL OR graded_by = 'auto')"
     );
     $stmt->execute([$roundId]);
@@ -339,6 +379,8 @@ function autoGradeRound(PDO $db, int $roundId): void
             $pick['did_play'] === null ? null : (bool) $pick['did_play'],
             $pick['tip'],
             (bool) $pick['first_points'],
+            $pick['assists'] === null ? null : (int) $pick['assists'],
+            $pick['rebounds'] === null ? null : (int) $pick['rebounds'],
         );
         $current = $pick['hit'] === null ? null : (bool) $pick['hit'];
         if ($verdict === $current) {
@@ -480,6 +522,21 @@ function syncEuroleague(PDO $db): void
             $db->rollBack();
         }
         error_log((string) $e);
+    }
+
+    // Jednom poslije migracije 018: automatske ocjene svih kola ponovo, jer je stara ocjena
+    // <−, >−, PS−, PA−, PAS− čitala kao plus, a PS / PA / PAS samo po poenima. Ručne ocjene se ne diraju.
+    if (getSetting($db, 'tips_regraded', '') === '') {
+        try {
+            $db->query('SELECT assists FROM picks LIMIT 1');
+            foreach ($db->query('SELECT id FROM rounds')->fetchAll(PDO::FETCH_COLUMN) as $roundId) {
+                autoGradeRound($db, (int) $roundId);
+            }
+            setSetting($db, 'tips_regraded', date('Y-m-d H:i:s'));
+        } catch (PDOException $e) {
+            // Migracija 018 još nije pokrenuta: pokušaće ponovo pri sljedećoj sinhronizaciji.
+            error_log($e->getMessage());
+        }
     }
 
     // Spisak povreda sa BasketNewsa (par puta dnevno), za odsutne saigrače u Formi.

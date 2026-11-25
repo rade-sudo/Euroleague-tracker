@@ -247,15 +247,21 @@ function formaDoubleTeams(PDO $db, string $season, array $games): array
     return array_keys($double);
 }
 
-// Granice kola: upisane u Formi, a za starija kola i one upisane samo na tiketu.
+// Granice kola: upisane u Formi, a za starija kola i one upisane samo na tiketu (samo obični + i −;
+// manja / veća granica i PS / PA / PAS imaju svoju granicu koja ne ide u Formu).
 function formaRoundLines(PDO $db, string $season, int $round): array
 {
     $stmt = $db->prepare(
-        'SELECT p.player_id, p.line FROM picks p JOIN rounds r ON r.id = p.round_id
+        'SELECT p.player_id, p.line, p.tip FROM picks p JOIN rounds r ON r.id = p.round_id
          WHERE r.number = ? AND p.player_id IS NOT NULL AND p.line IS NOT NULL'
     );
     $stmt->execute([$round]);
-    $lines = $stmt->fetchAll(PDO::FETCH_KEY_PAIR);
+    $lines = [];
+    foreach ($stmt as $pick) {
+        if (parseTip($pick['tip'])['plain']) {
+            $lines[(int) $pick['player_id']] = $pick['line'];
+        }
+    }
     $stmt = $db->prepare('SELECT player_id, line FROM forma_lines WHERE season = ? AND round = ?');
     $stmt->execute([$season, $round]);
     foreach ($stmt->fetchAll(PDO::FETCH_KEY_PAIR) as $playerId => $line) {
@@ -781,17 +787,20 @@ function formaPickChanges(array $picks, array $schedule, ?string $line, ?string 
     return $changes;
 }
 
-// Igrači na tiketima kola: [playerId => [pick, ...]].
+// Igrači na tiketima kola sa običnim + ili −: [playerId => [pick, ...]]. Samo njima granica iz Forme
+// (i uvoza sa Maxbeta) ide na tiket; manju / veću granicu i PS / PA / PAS upisuje admin.
 function formaRoundPicks(PDO $db, int $round): array
 {
     $stmt = $db->prepare(
-        'SELECT p.id, p.round_id, p.player_id, p.game_id, p.line FROM picks p JOIN rounds r ON r.id = p.round_id
+        'SELECT p.id, p.round_id, p.player_id, p.game_id, p.line, p.tip FROM picks p JOIN rounds r ON r.id = p.round_id
          WHERE r.number = ? AND p.player_id IS NOT NULL'
     );
     $stmt->execute([$round]);
     $byPlayer = [];
     foreach ($stmt as $pick) {
-        $byPlayer[(int) $pick['player_id']][] = $pick;
+        if (parseTip($pick['tip'])['plain']) {
+            $byPlayer[(int) $pick['player_id']][] = $pick;
+        }
     }
     return $byPlayer;
 }

@@ -95,8 +95,12 @@ function pickVerdictText(array $pick): string
     if ($pick['points'] === null) {
         return $verdict;
     }
-    $line = $pick['line'] === null ? '' : ', granica ' . rtrim(rtrim($pick['line'], '0'), '.') . ' ' . ($pick['tip'] ?: '+');
-    return "{$pick['points']} poena{$line}. {$verdict}";
+    $line = $pick['line'] === null ? '' : ', granica ' . rtrim(rtrim($pick['line'], '0'), '.') . ' ' . str_replace('-', '−', $pick['tip'] ?: '+');
+    // PS / PA / PAS: zbir ide uz poene ("PAS 33 (20 poena)").
+    $tip = parseTip($pick['tip']);
+    $value = tipValue($tip, (int) $pick['points'], isset($pick['assists']) ? (int) $pick['assists'] : null, isset($pick['rebounds']) ? (int) $pick['rebounds'] : null);
+    $what = $tip['stat'] !== 'pts' && $value !== null ? strtoupper($tip['stat']) . " {$value} ({$pick['points']} poena)" : "{$pick['points']} poena";
+    return "{$what}{$line}. {$verdict}";
 }
 
 // Svi događaji koji bi sada trebali biti poslati: ['key', 'type', 'recipients' => [userId => poruka]].
@@ -124,7 +128,7 @@ function collectNotificationEvents(PDO $db, array $users): array
         $ticketDays = array_values(array_filter($schedule, fn (array $day) => $day['ticket']));
         $next = nextTicketDay($schedule);
 
-        $stmt = $db->prepare('SELECT id, friend_id, game_id, slip_id, player, tip, line, points, did_play, first_points, hit FROM picks WHERE round_id = ? ORDER BY id');
+        $stmt = $db->prepare('SELECT id, friend_id, game_id, slip_id, player, tip, line, points, assists, rebounds, did_play, first_points, hit FROM picks WHERE round_id = ? ORDER BY id');
         $stmt->execute([$roundId]);
         $picks = $stmt->fetchAll();
         $friendsWithPicks = array_unique(array_map(fn (array $p) => (int) $p['friend_id'], $picks));

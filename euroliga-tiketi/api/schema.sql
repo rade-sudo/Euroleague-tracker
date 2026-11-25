@@ -152,6 +152,9 @@ CREATE TABLE IF NOT EXISTS picks (
   -- Granica sa Maxbeta (upisuje admin) i poeni posle utakmice; did_play 0 = nije igrao.
   line       DECIMAL(3, 1) NULL,
   points     TINYINT UNSIGNED NULL,
+  -- Za tipove PS / PA / PAS (poeni + skokovi / asistencije).
+  assists    TINYINT UNSIGNED NULL,
+  rebounds   TINYINT UNSIGNED NULL,
   did_play   BOOLEAN NULL,
   -- Dao prve poene na meču (Maxbet akcija: tip "+" je odmah prošao).
   first_points BOOLEAN NOT NULL DEFAULT FALSE,

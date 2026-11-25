@@ -18,6 +18,8 @@ export default function PlayerInput({
   takenBy = () => null,
   // Igrač koji nije u ponudi Maxbeta: siv je i ne može se izabrati.
   unavailable = () => false,
+  // Forma uz prijedlog (granica, tip, šansa); null kad je nema za tog igrača.
+  extra = null,
 }) {
   const listId = useId()
   const [open, setOpen] = useState(false)
@@ -113,21 +115,36 @@ export default function PlayerInput({
                     choose(player)
                   }}
                   onMouseEnter={() => !off && setHighlight(index)}
-                  className={`flex items-baseline justify-between gap-3 px-3 py-2 text-sm ${
+                  className={`flex ${extra ? 'items-center' : 'items-baseline'} justify-between gap-3 px-3 py-2 text-sm ${
                     off ? 'cursor-not-allowed' : 'cursor-pointer'
                   } ${index === active ? 'bg-white/6' : ''}`}
                 >
-                  <span className={`truncate ${off ? 'font-medium text-zinc-500' : taken ? 'font-semibold text-zinc-500' : 'font-semibold text-white'}`}>
-                    {player.name}
-                  </span>
+                  {extra ? (
+                    // Sa Formom: ime i klub lijevo, granica / tip / šansa desno.
+                    <span className="min-w-0">
+                      <span className={`block truncate ${off ? 'font-medium text-zinc-500' : taken ? 'font-semibold text-zinc-500' : 'font-semibold text-white'}`}>
+                        {player.name}
+                      </span>
+                      <small className={`block text-xs ${player.active ? 'text-zinc-500' : 'text-zinc-600'}`}>
+                        {player.club ?? ''}
+                        {player.active ? '' : ' · ranije'}
+                      </small>
+                    </span>
+                  ) : (
+                    <span className={`truncate ${off ? 'font-medium text-zinc-500' : taken ? 'font-semibold text-zinc-500' : 'font-semibold text-white'}`}>
+                      {player.name}
+                    </span>
+                  )}
                   {off ? (
                     <span className="shrink-0 text-xs text-zinc-500 italic">nije u ponudi Maxbeta</span>
                   ) : taken ? (
                     <span className="shrink-0 text-xs font-semibold text-accent">već izabran · {taken}</span>
+                  ) : extra?.(player) ? (
+                    <span className="shrink-0">{extra(player)}</span>
                   ) : (
                     <span className={`shrink-0 text-xs ${player.active ? 'text-zinc-500' : 'text-zinc-600'}`}>
-                      {player.club ?? ''}
-                      {player.active ? '' : ' · ranije'}
+                      {extra ? '' : (player.club ?? '')}
+                      {player.active || extra ? '' : ' · ranije'}
                     </span>
                   )}
                 </li>

@@ -4,6 +4,10 @@ import { ChevronIcon, EyeIcon, LockIcon, TrophyIcon, XIcon } from './icons.jsx'
 import PlayerInput from './PlayerInput.jsx'
 import { km, moneyInput } from './money.js'
 import { buildPlayerIndex, normalizePlayerName } from './players.js'
+import { lineVerdict, parseTip, STAT_SHORT, tipName, tipSign, tipValue } from './tips.js'
+import { enrichRound } from './forma.js'
+import { FormaChip, FormaMini, FormaPickCard, TipPicker } from './TicketForma.jsx'
+import { formaChip } from './ticketForma.js'
 
 const DAYS = ['nedjelja', 'ponedjeljak', 'utorak', 'srijeda', 'četvrtak', 'petak', 'subota']
 const SHORT_DAYS = ['ned', 'pon', 'uto', 'sri', 'čet', 'pet', 'sub']
@@ -161,17 +165,7 @@ function abbreviations(picks) {
 
 const playerKey = (pick) => pick.playerId ?? normalizePlayerName(pick.player)
 
-const isUnderTip = (tip) => tip.startsWith('-') || tip.startsWith('−')
-
-// Isto pravilo kao na serveru: nije igrao = prošao, "+" traži više od granice, "−" manje.
-function lineVerdict(pick) {
-  // Prvi poeni na meču (Maxbet akcija): „+“ je odmah prošao.
-  if (pick.firstPoints && !isUnderTip(pick.tip)) return true
-  if (pick.didPlay === null) return null
-  if (!pick.didPlay) return true
-  if (pick.line === null) return null
-  return isUnderTip(pick.tip) ? pick.points < pick.line : pick.points > pick.line
-}
+// Tipovi (+, −, <+, PS−, PAS+ …) i automatska ocjena: src/tips.js, isto pravilo kao na serveru.
 
 function pickBadge(pick, autoGrade, isAdmin) {
   const verdict = lineVerdict(pick)
@@ -209,6 +203,7 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
   const [player, setPlayer] = useState('')
   const [selectedPlayer, setSelectedPlayer] = useState(null)
   const [playerIndex, setPlayerIndex] = useState(null)
+  const [forma, setForma] = useState(null)
   const [tip, setTip] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -266,6 +261,28 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
       ignore = true
     }
   }, [roundId, status, refreshKey])
+
+  // Forma kola za tiket; bez nje (greška, staro kolo) tiket radi kao i prije.
+  const roundNumber = round?.number
+  useEffect(() => {
+    if (!roundNumber || status === 'done') return undefined
+    let ignore = false
+    api(`/forma?round=${roundNumber}`).then(
+      (data) => {
+        if (ignore || data.round !== roundNumber) return
+        const gameOf = new Map()
+        for (const game of data.games) {
+          gameOf.set(game.home, game)
+          gameOf.set(game.away, game)
+        }
+        setForma({ round: roundNumber, byId: new Map(enrichRound(data).map((p) => [p.id, p])), gameOf })
+      },
+      () => {},
+    )
+    return () => {
+      ignore = true
+    }
+  }, [roundNumber, status, refreshKey])
 
   // Ponovno učitavanje u trenutku roka sljedećeg dana tiketa i, dok traju utakmice, na 5 minuta.
   useEffect(() => {
@@ -400,6 +417,19 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
     } finally {
       setBusy(false)
     }
+  }
+
+  // Forma na tiketu: igrač iz Forme kola (granica, tip, šansa, oznake); null dok se ne učita ili ga nema.
+  const formaOf = (playerId) => (forma?.round === roundNumber && playerId ? (forma.byId.get(playerId) ?? null) : null)
+  const selectedForma = selectedPlayer ? formaOf(selectedPlayer.id) : null
+  // Tip se predlaže sam samo uz Maxbet granicu (ne uz procjenu) i ako igrač igra.
+  const formaTip = (fp) => (fp && fp.lineSrc === 'maxbet' && !fp.out ? fp.chance.tip : null)
+  const suggestedTip = formaTip(selectedForma)
+
+  function selectPlayer(selected) {
+    setSelectedPlayer(selected)
+    const suggestion = formaTip(selected ? formaOf(selected.id) : null)
+    if (suggestion) setTip(suggestion === '+' ? '+' : '-')
   }
 
   function addPick(event) {
@@ -752,6 +782,7 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
                                 pick={pick}
                                 game={games.get(pick.gameId)}
                                 notOffered={!group.day?.locked && tickets.unavailable.has(pick.playerId)}
+                                forma={group.day?.locked ? null : formaChip(pick, formaOf(pick.playerId))}
                               >
                                 {(!group.day?.locked || isAdmin) && (
                                   <button
@@ -779,7 +810,7 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
                     <form
                       onSubmit={addPick}
                       noValidate
-                      className="grid grid-cols-1 gap-2 min-[560px]:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_auto]"
+                      className="grid grid-cols-1 gap-2 min-[560px]:grid-cols-[minmax(0,1fr)_auto_auto]"
                     >
                       <PlayerInput
                         id="pick-player"
@@ -790,7 +821,8 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
                           setPlayer(text)
                           if (error) setError('')
                         }}
-                        onSelect={setSelectedPlayer}
+                        onSelect={selectPlayer}
+                        extra={forma ? (p) => (formaOf(p.id) ? <FormaMini player={formaOf(p.id)} /> : null) : null}
                         placeholder="Igrač, npr. Vezenkov"
                         ariaLabel="Igrač"
                         takenBy={(playerId) => {
@@ -808,19 +840,12 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
                         }
                         className="h-11 w-full min-w-0 rounded-[9px] border border-line bg-surface-2 px-3.25 text-white outline-none placeholder:text-zinc-600 focus:border-accent focus:ring-3 focus:ring-accent/12"
                       />
-                      <input
-                        value={tip}
-                        onChange={(event) => setTip(event.target.value)}
-                        maxLength={30}
-                        placeholder="Tip, npr. + ili -"
-                        autoComplete="off"
-                        aria-label="Tip"
-                        className="h-11 min-w-0 rounded-[9px] border border-line bg-surface-2 px-3.25 text-white outline-none placeholder:text-zinc-600 focus:border-accent focus:ring-3 focus:ring-accent/12"
-                      />
+                      <TipPicker value={tip} onChange={setTip} suggested={suggestedTip} />
                       <button type="submit" disabled={busy} className={primaryButtonClass}>
                         Dodaj
                       </button>
                     </form>
+                    {selectedForma && <FormaPickCard player={selectedForma} game={forma.gameOf.get(selectedForma.team)} tip={tip} />}
                     {errorMessage}
                     <p className="flex items-start gap-2.5 rounded-[10px] bg-white/3 px-3.25 py-2.75 text-[13px] text-zinc-400 ring-1 ring-line ring-inset">
                       <LockIcon className="mt-0.5 size-4 shrink-0 text-accent" />
@@ -914,7 +939,7 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
                                     key={pick.id}
                                     className="rounded-md bg-surface-2 px-2 py-0.5 text-[13px] text-zinc-400 ring-1 ring-line ring-inset"
                                   >
-                                    <b className="font-semibold text-white">{pick.player}</b> {pick.tip || '+'}
+                                    <b className="font-semibold text-white">{pick.player}</b> {tipSign(pick.tip)}
                                     {game ? ` · ${shortDay(game.day.date)}` : ''}
                                   </span>
                                 )
@@ -1126,7 +1151,7 @@ function TicketAvatar({ name, isMe = false }) {
 }
 
 // Red na tvom tiketu: igrač, ispod tip, ispod utakmica i vrijeme.
-function PickRow({ index, pick, game, notOffered, children }) {
+function PickRow({ index, pick, game, notOffered, forma, children }) {
   return (
     <div
       className={`grid grid-cols-[28px_minmax(0,1fr)_auto] items-center gap-3 border-b border-dashed border-line px-3.5 py-3 last:border-b-0 ${
@@ -1139,7 +1164,11 @@ function PickRow({ index, pick, game, notOffered, children }) {
           {pick.player}
           {pick.firstPoints && <PpmTag />}
         </div>
-        <div className="text-[13px] text-zinc-400">{pick.tip || 'bez tipa'}</div>
+        <div className="text-[13px] text-zinc-400 tabular-nums">
+          {pick.tip ? tipSign(pick.tip) : 'bez tipa'}
+          {pick.line !== null && ` ${pick.line}`}
+          {tipName(pick.tip) && <TipKind tip={pick.tip} />}
+        </div>
         {game && (
           <div className="flex items-center gap-1.25 text-[12.5px] text-zinc-400">
             <span className="size-1.25 shrink-0 rounded-full bg-accent" />
@@ -1150,6 +1179,9 @@ function PickRow({ index, pick, game, notOffered, children }) {
         )}
         {notOffered && (
           <div className="mt-1 text-[12.5px] font-semibold text-rose-400">Nije u ponudi Maxbeta · zamijeni ga do roka</div>
+        )}
+        {!notOffered && forma && (
+          <FormaChip chip={forma} />
         )}
       </div>
       {children}
@@ -1191,7 +1223,7 @@ function PlayerCard({ pick, owner, info, game, others, isAdmin }) {
   const history = info?.history ?? []
   const hits = history.filter((entry) => entry.hit).length
   const last = [...history].reverse().find((entry) => entry.points !== null)
-  const tip = isUnderTip(pick.tip) ? '−' : pick.tip || '+'
+  const tip = tipSign(pick.tip)
   const rows = [
     game && {
       label: 'Utakmica',
@@ -1203,7 +1235,14 @@ function PlayerCard({ pick, owner, info, game, others, isAdmin }) {
     {
       label: 'Granica',
       value: pick.line === null ? '—' : `${pick.line} ${tip}`,
-      note: pick.line === null ? (isAdmin ? 'upisuješ kad izađe na Maxbetu' : 'admin je upisuje kad izađe na Maxbetu') : null,
+      note:
+        pick.line === null
+          ? parseTip(pick.tip).plain
+            ? isAdmin
+              ? 'upisuješ kad izađe na Maxbetu'
+              : 'admin je upisuje kad izađe na Maxbetu'
+            : `${tipName(pick.tip)}: granicu upisuje admin`
+          : tipName(pick.tip) || null,
     },
     {
       label: 'Kod vas',
@@ -1512,7 +1551,7 @@ function SlipCard({ slip, day, picks, games, friendName, myFriendId, isAdmin, st
           <div key={pick.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2.5 border-b border-dashed border-line px-3.5 py-2.5">
             <div className="min-w-0">
               <b className="block font-semibold wrap-anywhere text-white">
-                {pick.player} <span className="font-normal text-zinc-400">{pick.tip || '+'}</span>
+                {pick.player} <span className="font-normal text-zinc-400">{tipSign(pick.tip)}</span>
                 {pick.firstPoints && <span className="ml-1.5 align-[1px]"><PpmTag /></span>}
               </b>
               <small className="block text-[12.5px] text-zinc-400">
@@ -1705,7 +1744,7 @@ function TicketCard({ friend, picks, games, manualResult, isMe, twoPicks, winner
 function BoardPick({ pick, game, finished, isAdmin, autoGrade, busy, onGrade, onLine }) {
   const badge = pickBadge(pick, autoGrade, isAdmin)
   const gameOver = pick.didPlay !== null
-  const sign = pick.tip || '+'
+  const sign = tipSign(pick.tip)
 
   let side
   if (isAdmin && (finished || gameOver)) {
@@ -1756,11 +1795,20 @@ function BoardPick({ pick, game, finished, isAdmin, autoGrade, busy, onGrade, on
               {sign}
             </label>
           ) : (
-            <span className="text-[13px] text-zinc-400">{pick.line === null ? sign : `granica ${pick.line} ${sign}`}</span>
+            <span className="text-[13px] text-zinc-400">
+              {pick.line === null ? sign : `granica ${pick.line} ${sign}`}
+              {tipName(pick.tip) && <TipKind tip={pick.tip} />}
+            </span>
           )}
           {pick.didPlay === true && (
             <span className="text-[12.5px] tabular-nums text-zinc-400">
               <strong className="font-display text-[15px] font-bold text-white">{pick.points}</strong> poena
+              {parseTip(pick.tip).stat !== 'pts' && tipValue(pick) !== null && (
+                <>
+                  {' · '}
+                  {STAT_SHORT[parseTip(pick.tip).stat]} <strong className="font-display text-[15px] font-bold text-white">{tipValue(pick)}</strong>
+                </>
+              )}
             </span>
           )}
           {pick.didPlay === false && <span className="text-[12.5px] text-zinc-400">nije igrao</span>}
@@ -1824,5 +1872,14 @@ function GradeButton({ pressed, tone, disabled, onClick }) {
     >
       {tone === 'yes' ? '✓' : '✗'}
     </button>
+  )
+}
+
+// Oznaka uz tip koji nije obični + / −: "manja plus", "poeni + skokovi".
+function TipKind({ tip }) {
+  return (
+    <span className="ml-1.5 inline-block rounded bg-violet-400/10 px-1.25 py-px align-[1px] font-display text-[10.5px] font-bold tracking-[0.08em] text-violet-300 uppercase">
+      {tipName(tip)}
+    </span>
   )
 }

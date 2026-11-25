@@ -321,6 +321,11 @@ if (preg_match('#^/rounds/(\d+)/picks$#', $route, $m) && $method === 'POST') {
 
     $player = normalizeName($body['player'] ?? '');
     $tip = normalizeName($body['tip'] ?? '');
+    // Tip u jednom obliku ("PAS-", "<+"), da ga ocjena i Forma uvijek prepoznaju.
+    $parsedTip = parseTip($tip);
+    if ($parsedTip['code'] !== null) {
+        $tip = $parsedTip['code'];
+    }
     if ($player === '') {
         fail(422, 'Upiši ime igrača.');
     }
@@ -365,8 +370,9 @@ if (preg_match('#^/rounds/(\d+)/picks$#', $route, $m) && $method === 'POST') {
             ? "{$player} je već na ovom tiketu."
             : "Igrača {$player} je već izabrao {$duplicate['name']} {$when}. Isti igrač se ne bira dvaput za isto veče.");
     }
-    // Granica koju je admin već upisao u Formi dolazi sama, da se ne kuca dvaput.
-    $line = formaLineFor($db, (int) $round['number'], $catalogPlayer['id'] ?? null);
+    // Granica koju je admin već upisao u Formi dolazi sama, da se ne kuca dvaput (samo obični + i −;
+    // manju / veću granicu i PS / PA / PAS admin upisuje ručno).
+    $line = $parsedTip['plain'] ? formaLineFor($db, (int) $round['number'], $catalogPlayer['id'] ?? null) : null;
     try {
         $db->prepare('INSERT INTO picks (round_id, friend_id, player_id, game_id, player, tip, line) VALUES (?, ?, ?, ?, ?, ?, ?)')
             ->execute([$round['id'], $friendId, $catalogPlayer['id'] ?? null, $gameId, $player, $tip, $line]);
@@ -557,8 +563,10 @@ if (preg_match('#^/picks/(\d+)/line$#', $route, $m) && $method === 'PUT') {
     $line = parseLine(readJson()['line'] ?? null);
     $db->beginTransaction();
     $db->prepare('UPDATE picks SET line = ? WHERE id = ?')->execute([$line, $pick['id']]);
-    // Ista granica se vidi i u Formi.
-    formaRememberLine($db, (int) $pick['number'], $pick['player_id'] === null ? null : (int) $pick['player_id'], $line);
+    // Ista granica se vidi i u Formi, ali samo za obični + i − (ostali tipovi imaju svoju granicu).
+    if (parseTip($pick['tip'])['plain']) {
+        formaRememberLine($db, (int) $pick['number'], $pick['player_id'] === null ? null : (int) $pick['player_id'], $line);
+    }
     autoGradeRound($db, (int) $pick['round_id']);
     $db->commit();
     respond(200, ['pick' => loadPick($db, (int) $pick['id']), 'results' => roundResults($db, (int) $pick['round_id'])]);
