@@ -534,7 +534,9 @@ function formaRegularsByLines(PDO $db, string $season, int $round): array
 // Vraća [players, igrači sa spiska povreda bez minuta u sezoni po timu].
 function formaAbsences(PDO $db, string $season, int $round, array $out, array $players, array $gameRows, array $teamGames, array $start): array
 {
-    $injuries = injuryReports($db);
+    // Kolo čije su sve utakmice počele: spisak povreda kakav je bio prije utakmica (Tačnost Forme).
+    $started = $start && max($start) <= date('Y-m-d H:i:s');
+    $injuries = injuryReports($db, $started ? $round : null);
     $overrides = formaAbsenceOverrides($db, $season, $round);
     $regularByLines = formaRegularsByLines($db, $season, $round);
 
@@ -615,6 +617,74 @@ function formaAbsences(PDO $db, string $season, int $round, array $out, array $p
         }
     }
     return [$out, $other];
+}
+
+/* ---------- Tačnost Forme ---------- */
+
+// Odigrana kola sa upisanim zapisnicima (svaka utakmica kola ima zapisnik ili ga nema ni 2 dana poslije).
+function formaAccuracyRounds(PDO $db): array
+{
+    $season = currentSeasonCode();
+    $stmt = $db->prepare(
+        "SELECT round, COUNT(*) AS games, SUM(stats = 'done') AS done, SUM(stats = 'waiting') AS waiting
+         FROM box_games WHERE season = ? AND played = 1 GROUP BY round ORDER BY round"
+    );
+    $stmt->execute([$season]);
+    $played = [];
+    foreach ($stmt as $row) {
+        $played[(int) $row['round']] = (int) $row['done'] > 0 && (int) $row['waiting'] === 0;
+    }
+    $rounds = [];
+    foreach (formaRounds($db, $season) as $round) {
+        if ($round['done'] && ($played[$round['number']] ?? false)) {
+            $rounds[] = $round['number'];
+        }
+    }
+    return ['season' => formaSeasonLabel($season), 'rounds' => $rounds];
+}
+
+// Forma kola kakva je bila prije utakmica (formaPayload uzima samo podatke od prije), plus šta su igrači dali
+// i tipovi sa tiketa. results: {playerId: {min, pts}}; doneTeams: timovi čija utakmica ima zapisnik
+// (igrač tog tima bez reda u zapisniku nije igrao).
+function formaAccuracyRound(PDO $db, array $user, int $round): array
+{
+    $season = currentSeasonCode();
+    $payload = formaPayload($db, $user, $round);
+    if ($payload['round'] !== $round) {
+        fail(404, "Kolo {$round} ne postoji.");
+    }
+    $stmt = $db->prepare(
+        "SELECT p.id, s.seconds, s.points FROM box_stats s
+         JOIN box_games g ON g.season = s.season AND g.game_code = s.game_code
+         JOIN players p ON p.code = s.player_code
+         WHERE g.season = ? AND g.round = ? AND g.stats = 'done'"
+    );
+    $stmt->execute([$season, $round]);
+    $results = [];
+    foreach ($stmt as $row) {
+        $results[(int) $row['id']] = ['min' => (int) round((int) $row['seconds'] / 60), 'pts' => (int) $row['points']];
+    }
+    $stmt = $db->prepare("SELECT home_code, away_code FROM box_games WHERE season = ? AND round = ? AND stats = 'done'");
+    $stmt->execute([$season, $round]);
+    $doneTeams = [];
+    foreach ($stmt as $row) {
+        $doneTeams[] = $row['home_code'];
+        $doneTeams[] = $row['away_code'];
+    }
+    $stmt = $db->prepare(
+        'SELECT p.player_id, p.tip, p.line FROM picks p JOIN rounds r ON r.id = p.round_id
+         WHERE r.number = ? AND p.player_id IS NOT NULL'
+    );
+    $stmt->execute([$round]);
+    $picks = array_map(fn (array $row) => [
+        'playerId' => (int) $row['player_id'],
+        'tip' => $row['tip'],
+        'line' => $row['line'] === null ? null : (float) $row['line'],
+    ], $stmt->fetchAll());
+
+    // Tačnosti ne treba sve što ide uz Formu kola: h2h ostaje (ulazi u projekciju), spisak povreda ne.
+    unset($payload['injuries'], $payload['rounds']);
+    return $payload + ['results' => (object) $results, 'doneTeams' => $doneTeams, 'picks' => $picks];
 }
 
 // Admin: {"round": 14, "playerId": 40, "status": "in" | "maybe" | "out" | null (vrati izvore)}.
@@ -1031,6 +1101,10 @@ function handleFormaRoute(PDO $db, array $user, string $method, string $route): 
             fail(403, 'Granice upisuje samo admin.');
         }
         respond(200, formaSaveLine($db, readJson()));
+    }
+    if ($route === '/forma/accuracy' && $method === 'GET') {
+        $round = filter_var($_GET['round'] ?? null, FILTER_VALIDATE_INT);
+        respond(200, $round === false || $round === null ? formaAccuracyRounds($db) : formaAccuracyRound($db, $user, $round));
     }
     if ($route === '/forma/absence' && $method === 'PUT') {
         if ($user['role'] !== 'admin') {

@@ -53,6 +53,9 @@ function injuryParse(string $html): array
     $rows = [];
     $team = null;
     foreach ($xpath->query('//tr') as $tr) {
+        if (!$tr instanceof DOMElement) {
+            continue;
+        }
         if (str_contains(' ' . $tr->getAttribute('class') . ' ', ' injury_reports__team-row ')) {
             $link = $xpath->query('.//a', $tr)->item(0);
             $team = $link ? $text($link) : null;
@@ -146,6 +149,7 @@ function syncInjuries(PDO $db, bool $force = false): void
     foreach ($found as $playerId => [$status, $comment]) {
         $insert->execute([$playerId, $status, $comment, $now]);
     }
+    injurySnapshot($db, $found);
     setSetting($db, 'injuries_checked_at', $now);
     setSetting($db, 'injuries_ok_at', $now);
     setSetting($db, 'injuries_count', (string) count($found));
@@ -154,12 +158,45 @@ function syncInjuries(PDO $db, bool $force = false): void
     $db->commit();
 }
 
-// Spisak za Formu: [playerId => ['status' => ..., 'comment' => ...]]. Prazno dok migracija 016 nije pokrenuta.
-function injuryReports(PDO $db): array
+// Spisak se pamti i po kolu (za Tačnost Forme): za kolo koje je počelo ili počinje u narednih 7 dana,
+// a još ima utakmica koje nisu počele. Kad počne zadnja utakmica kola, snimak se više ne mijenja.
+function injurySnapshot(PDO $db, array $found): void
 {
     try {
+        $season = currentSeasonCode();
+        $stmt = $db->prepare(
+            'SELECT round FROM games WHERE season = ? GROUP BY round HAVING MAX(starts_at) > ? AND MIN(starts_at) <= ?'
+        );
+        $stmt->execute([$season, date('Y-m-d H:i:s'), date('Y-m-d H:i:s', time() + 7 * 86400)]);
+        $insert = $db->prepare('INSERT INTO injury_snapshots (season, round, player_id, status, comment) VALUES (?, ?, ?, ?, ?)');
+        foreach ($stmt->fetchAll(PDO::FETCH_COLUMN) as $round) {
+            $db->prepare('DELETE FROM injury_snapshots WHERE season = ? AND round = ?')->execute([$season, $round]);
+            foreach ($found as $playerId => [$status, $comment]) {
+                $insert->execute([$season, $round, $playerId, $status, $comment]);
+            }
+        }
+    } catch (PDOException $e) {
+        // Bez migracije 017 spisak povreda i dalje radi, samo se ne pamti po kolu.
+        if ($e->getCode() !== '42S02') {
+            throw $e;
+        }
+    }
+}
+
+// Spisak za Formu: [playerId => ['status' => ..., 'comment' => ...]]. Prazno dok migracija 016 nije pokrenuta.
+// $round: kolo čije su sve utakmice počele čita se iz snimka (kako je bilo prije utakmica), inače današnji spisak.
+function injuryReports(PDO $db, ?int $round = null): array
+{
+    try {
+        if ($round !== null) {
+            $stmt = $db->prepare('SELECT player_id, status, comment FROM injury_snapshots WHERE season = ? AND round = ?');
+            $stmt->execute([currentSeasonCode(), $round]);
+            $rows = $stmt->fetchAll();
+        } else {
+            $rows = $db->query('SELECT player_id, status, comment FROM injury_reports')->fetchAll();
+        }
         $out = [];
-        foreach ($db->query('SELECT player_id, status, comment FROM injury_reports') as $row) {
+        foreach ($rows as $row) {
             $out[(int) $row['player_id']] = ['status' => $row['status'], 'comment' => $row['comment']];
         }
         return $out;

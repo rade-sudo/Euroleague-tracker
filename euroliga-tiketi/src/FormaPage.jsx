@@ -2,7 +2,8 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { api } from './api.js'
 import AppHeader from './AppHeader.jsx'
 import { XIcon } from './icons.jsx'
-import { ABSENCE_SOURCES, enrichPlayer, sureOut, fix1, FORMA_GRID, hitsOver, hitsUnder, pctTone, playedCount, readMaxbetHash } from './forma.js'
+import { ABSENCE_SOURCES, bestPicks, enrichRound, sureOut, fix1, FORMA_GRID, hitsOver, hitsUnder, pctTone, playedCount, readMaxbetHash } from './forma.js'
+import FormaAccuracy from './FormaAccuracy.jsx'
 import FormaImport from './FormaImport.jsx'
 import FormaPlayer, { SourceTag, TipChip } from './FormaPlayer.jsx'
 import { useSessionGuard } from './session.js'
@@ -21,7 +22,6 @@ const SORT_FNS = {
   chance: (a, b) => b.offered - a.offered || b.chance.pct - a.chance.pct,
   form: (a, b) => b.formPct - a.formPct,
 }
-const BEST_COUNT = 5
 
 // 1 granica, 2 granice, 5 granica, 21 granica.
 const linesWord = (n) => (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14) ? 'granice' : 'granica')
@@ -66,17 +66,21 @@ export default function FormaPage() {
   // Granice sa Maxbeta (dugme „Granice → Forma“ otvara /forma#maxbet=…); import = prikazan ekran uvoza.
   const [maxbetRows, setMaxbetRows] = useState(() => readMaxbetHash(window.location.hash))
   const [importOpen, setImportOpen] = useState(() => readMaxbetHash(window.location.hash) !== null)
+  // Kolo ili Tačnost Forme; pamti se u adresi (?pogled=tacnost).
+  const [page, setPage] = useState(() => (new URLSearchParams(window.location.search).get('pogled') === 'tacnost' ? 'tacnost' : 'kolo'))
+
+  function changePage(next) {
+    setPage(next)
+    const url = new URL(window.location.href)
+    if (next === 'tacnost') url.searchParams.set('pogled', 'tacnost')
+    else url.searchParams.delete('pogled')
+    window.history.replaceState(null, '', url)
+  }
 
   useSessionGuard()
 
-  const players = useMemo(() => {
-    if (!data?.players) return []
-    const doubleTeams = new Set(data.double)
-    // Saigrači po timu: minute odsutnih idu igračima iste pozicije.
-    const byTeam = new Map()
-    for (const player of data.players) byTeam.set(player.team, [...(byTeam.get(player.team) ?? []), player])
-    return data.players.map((player) => enrichPlayer(player, data.defense, doubleTeams, byTeam.get(player.team)))
-  }, [data])
+  // Saigrači po timu: minute odsutnih idu igračima iste pozicije.
+  const players = useMemo(() => (data?.players ? enrichRound(data) : []), [data])
 
   // Admin: igra / upitan / ne igra (null = vrati na izvore). Projekcije se preračunaju sa servera.
   async function saveAbsence(playerId, status) {
@@ -166,19 +170,36 @@ export default function FormaPage() {
           <FormaImport data={data} players={players} maxbetRows={maxbetRows} onClose={closeImport} onSaved={reloadRound} />
         )}
         {load.status === 'ready' && !(importOpen && data.isAdmin && data.round !== null) && (
-          <FormaContent
-            data={data}
-            players={players}
-            onImport={() => setImportOpen(true)}
-            view={view}
-            onView={(patch) => setView((current) => ({ ...current, ...patch }))}
-            onJump={jumpTo}
-            openedAt={openedAt}
-            roundState={roundState}
-            onRound={changeRound}
-            onSaveLine={saveLine}
-            onSaveAbsence={saveAbsence}
-          />
+          <>
+            {/* Kolo ili Tačnost: vidi svako, a adresa /forma?pogled=tacnost se može poslati drugaru. */}
+            <div className={segClass} role="group" aria-label="Pogled">
+              {[
+                ['kolo', data.round === null ? 'Kolo' : `Kolo ${data.round}`],
+                ['tacnost', 'Tačnost'],
+              ].map(([id, label]) => (
+                <button key={id} type="button" aria-pressed={page === id} onClick={() => changePage(id)} className={segButtonClass(page === id)}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            {page === 'tacnost' ? (
+              <FormaAccuracy />
+            ) : (
+              <FormaContent
+                data={data}
+                players={players}
+                onImport={() => setImportOpen(true)}
+                view={view}
+                onView={(patch) => setView((current) => ({ ...current, ...patch }))}
+                onJump={jumpTo}
+                openedAt={openedAt}
+                roundState={roundState}
+                onRound={changeRound}
+                onSaveLine={saveLine}
+                onSaveAbsence={saveAbsence}
+              />
+            )}
+          </>
         )}
       </main>
     </div>
@@ -344,13 +365,7 @@ function FormaContent({ data, players, onImport, view, onView, onJump, openedAt,
 }
 
 function BestPicks({ players, games, gameOfTeam, onJump, now, onImport }) {
-  // Samo utakmice koje još nisu počele; za odigrano kolo sve.
-  const upcoming = new Set(games.filter((g) => !g.played && new Date(g.startsAt).getTime() > now).map((g) => g.id))
-  const pool = (upcoming.size ? players.filter((p) => upcoming.has(gameOfTeam.get(p.team)?.id)) : players)
-    // Ne nudi se ko nije u ponudi Maxbeta, ko ne igra ili je upitan, ni ko nije igrao zadnju utakmicu tima.
-    // Ni kad "Maxbet zna nešto": granica podignuta iznad uobičajene, a ne znamo zašto.
-    .filter((p) => p.offered && !p.out && !p.guard && p.last10[0] && !p.last10[0].dnp)
-  const best = [...pool].sort((a, b) => b.chance.pct - a.chance.pct).slice(0, BEST_COUNT)
+  const best = bestPicks(players, games, gameOfTeam, now)
   if (!best.length) return null
 
   return (

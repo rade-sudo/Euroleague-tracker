@@ -271,3 +271,24 @@ export function readMaxbetHash(hash) {
     return null
   }
 }
+
+const BEST_COUNT = 5
+
+// "Najbolje šanse kola": samo utakmice koje još nisu počele (za odigrano kolo sve), bez igrača koji nisu
+// u ponudi Maxbeta, ne igraju ili su upitni, nisu igrali zadnju utakmicu tima, ni kad "Maxbet zna nešto".
+// Isti izbor koristi i Tačnost Forme.
+export function bestPicks(players, games, gameOfTeam, now) {
+  const upcoming = new Set(games.filter((g) => !g.played && new Date(g.startsAt).getTime() > now).map((g) => g.id))
+  return (upcoming.size ? players.filter((p) => upcoming.has(gameOfTeam.get(p.team)?.id)) : players)
+    .filter((p) => p.offered && !p.out && !p.guard && p.last10[0] && !p.last10[0].dnp)
+    .sort((a, b) => b.chance.pct - a.chance.pct)
+    .slice(0, BEST_COUNT)
+}
+
+// Svi igrači kola sa projekcijom: saigrači po timu (odsutni) i dvostruko kolo, kao na stranici Forma.
+export function enrichRound(data) {
+  const doubleTeams = new Set(data.double)
+  const byTeam = new Map()
+  for (const player of data.players) byTeam.set(player.team, [...(byTeam.get(player.team) ?? []), player])
+  return data.players.map((player) => enrichPlayer(player, data.defense, doubleTeams, byTeam.get(player.team)))
+}
