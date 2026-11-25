@@ -8,6 +8,12 @@ import { lineVerdict, parseTip, STAT_SHORT, tipName, tipSign, tipValue } from '.
 import { enrichRound } from './forma.js'
 import { FormaChip, FormaMini, FormaPickCard, TipPicker } from './TicketForma.jsx'
 import { formaChip } from './ticketForma.js'
+import { liveState } from './live.js'
+import { LiveBadge, LiveGames, LiveLine } from './LiveTickets.jsx'
+
+// Tiketi uživo: osvježavanje dok traju utakmice, i koliko dugo poslije početka se prate.
+const LIVE_POLL_MS = 30000
+const LIVE_WINDOW_MS = 6 * 3600 * 1000
 
 const DAYS = ['nedjelja', 'ponedjeljak', 'utorak', 'srijeda', 'četvrtak', 'petak', 'subota']
 const SHORT_DAYS = ['ned', 'pon', 'uto', 'sri', 'čet', 'pet', 'sub']
@@ -201,6 +207,7 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
   const [editingFriendId, setEditingFriendId] = useState(null)
   const [deadlineDraft, setDeadlineDraft] = useState(null)
   const [player, setPlayer] = useState('')
+  const [live, setLive] = useState(null)
   const [selectedPlayer, setSelectedPlayer] = useState(null)
   const [playerIndex, setPlayerIndex] = useState(null)
   const [forma, setForma] = useState(null)
@@ -283,6 +290,46 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
       ignore = true
     }
   }, [roundNumber, status, refreshKey])
+
+  // Tiketi uživo: dok traju utakmice igrača sa tiketa, svakih 30 s (server pita Euroligu najviše
+  // jednom u 30 s po utakmici). Prije prve utakmice čeka njen početak, a kad sve završe, staje.
+  useEffect(() => {
+    if (!roundId || tickets?.roundId !== roundId) return undefined
+    const ids = new Set(tickets.list.flatMap((ticket) => ticket.picks.map((pick) => pick.gameId)).filter(Boolean))
+    const starts = tickets.schedule
+      .flatMap((day) => day.games)
+      .filter((game) => ids.has(game.id))
+      .map((game) => localDate(game.startsAt).getTime())
+    if (!starts.length) return undefined
+    let ignore = false
+    let timer
+    const tick = () => {
+      const now = Date.now()
+      const started = starts.filter((start) => start <= now + 30000 && start >= now - LIVE_WINDOW_MS)
+      const next = starts.filter((start) => start > now + 30000).sort((a, b) => a - b)[0]
+      if (!started.length) {
+        if (next && next - now < 86400000) timer = setTimeout(tick, next - now)
+        return
+      }
+      api(`/rounds/${roundId}/live`).then(
+        (data) => {
+          if (ignore) return
+          setLive({ roundId, ...data })
+          const allDone = data.games.length >= started.length && data.games.every((game) => game.finished)
+          if (!allDone) timer = setTimeout(tick, LIVE_POLL_MS)
+          else if (next && next - Date.now() < 86400000) timer = setTimeout(tick, next - Date.now())
+        },
+        () => {
+          if (!ignore) timer = setTimeout(tick, 60000)
+        },
+      )
+    }
+    tick()
+    return () => {
+      ignore = true
+      clearTimeout(timer)
+    }
+  }, [roundId, tickets])
 
   // Ponovno učitavanje u trenutku roka sljedećeg dana tiketa i, dok traju utakmice, na 5 minuta.
   useEffect(() => {
@@ -420,6 +467,11 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
   }
 
   // Forma na tiketu: igrač iz Forme kola (granica, tip, šansa, oznake); null dok se ne učita ili ga nema.
+  // Igrač sa tiketa uživo (stanje prema granici); null dok njegova utakmica nije počela.
+  const liveOf = (pick) => {
+    if (live?.roundId !== roundId || !pick.playerId || !pick.gameId) return null
+    return liveState(pick, live.players[pick.playerId], live.games.find((game) => game.id === pick.gameId))
+  }
   const formaOf = (playerId) => (forma?.round === roundNumber && playerId ? (forma.byId.get(playerId) ?? null) : null)
   const selectedForma = selectedPlayer ? formaOf(selectedPlayer.id) : null
   // Tip se predlaže sam samo uz Maxbet granicu (ne uz procjenu) i ako igrač igra.
@@ -563,6 +615,7 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
       <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,330px),1fr))] gap-3.5">
         {cards.map(({ friend, picks }) => (
           <TicketCard
+            liveOf={liveOf}
             key={friend.id}
             friend={friend}
             picks={picks}
@@ -736,6 +789,7 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
       </div>
 
       <div className="flex flex-col gap-4 p-5">
+        {live?.roundId === roundId && <LiveGames games={live.games} />}
         {!showForm && errorMessage}
         {!loaded ? (
           <p className="py-6 text-center text-sm text-zinc-500">Učitavanje tiketa…</p>
@@ -783,6 +837,7 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
                                 game={games.get(pick.gameId)}
                                 notOffered={!group.day?.locked && tickets.unavailable.has(pick.playerId)}
                                 forma={group.day?.locked ? null : formaChip(pick, formaOf(pick.playerId))}
+                                live={liveOf(pick)}
                               >
                                 {(!group.day?.locked || isAdmin) && (
                                   <button
@@ -908,6 +963,7 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
                                   open={openPickId === pick.id}
                                   onHover={hoverChip}
                                   onToggle={() => setOpenPickId(openPickId === pick.id ? null : pick.id)}
+                                  live={liveOf(pick)}
                                 >
                                   <PlayerCard
                                     pick={pick}
@@ -1151,7 +1207,7 @@ function TicketAvatar({ name, isMe = false }) {
 }
 
 // Red na tvom tiketu: igrač, ispod tip, ispod utakmica i vrijeme.
-function PickRow({ index, pick, game, notOffered, forma, children }) {
+function PickRow({ index, pick, game, notOffered, forma, live, children }) {
   return (
     <div
       className={`grid grid-cols-[28px_minmax(0,1fr)_auto] items-center gap-3 border-b border-dashed border-line px-3.5 py-3 last:border-b-0 ${
@@ -1180,7 +1236,8 @@ function PickRow({ index, pick, game, notOffered, forma, children }) {
         {notOffered && (
           <div className="mt-1 text-[12.5px] font-semibold text-rose-400">Nije u ponudi Maxbeta · zamijeni ga do roka</div>
         )}
-        {!notOffered && forma && (
+        {live && <LiveLine state={live} />}
+        {!live && !notOffered && forma && (
           <FormaChip chip={forma} />
         )}
       </div>
@@ -1190,7 +1247,7 @@ function PickRow({ index, pick, game, notOffered, forma, children }) {
 }
 
 // Kockica sa skraćenicom igrača (samo admin). Tačkica: isti igrač je i kod drugog drugara.
-function CrewChip({ pick, abbr, others, open, onHover, onToggle, children }) {
+function CrewChip({ pick, abbr, others, open, onHover, onToggle, live, children }) {
   return (
     <span
       data-crew-chip
@@ -1212,6 +1269,7 @@ function CrewChip({ pick, abbr, others, open, onHover, onToggle, children }) {
       {others.length > 0 && (
         <span className="pointer-events-none absolute -top-0.75 -right-0.75 size-2 rounded-full bg-accent ring-2 ring-surface" />
       )}
+      {live && !open && <LiveBadge state={live} />}
       {open && children}
     </span>
   )
@@ -1652,7 +1710,7 @@ function TwoPicksTag({ children }) {
   )
 }
 
-function TicketCard({ friend, picks, games, manualResult, isMe, twoPicks, winner, finished, isAdmin, autoGrade, busy, onGrade, onLine }) {
+function TicketCard({ friend, picks, games, manualResult, isMe, twoPicks, winner, finished, isAdmin, autoGrade, busy, onGrade, onLine, liveOf }) {
   const result = picks.length ? ticketResult(picks) : null
 
   let foot = null
@@ -1723,6 +1781,7 @@ function TicketCard({ friend, picks, games, manualResult, isMe, twoPicks, winner
             busy={busy}
             onGrade={(value) => onGrade(pick, value)}
             onLine={(value) => onLine(pick, value)}
+            live={liveOf?.(pick)}
           />
         ))
       ) : (
@@ -1741,7 +1800,7 @@ function TicketCard({ friend, picks, games, manualResult, isMe, twoPicks, winner
 }
 
 // Igrač na zaključanom tiketu: utakmica, granica (admin je upisuje), poeni i ocjena.
-function BoardPick({ pick, game, finished, isAdmin, autoGrade, busy, onGrade, onLine }) {
+function BoardPick({ pick, game, finished, isAdmin, autoGrade, busy, onGrade, onLine, live }) {
   const badge = pickBadge(pick, autoGrade, isAdmin)
   const gameOver = pick.didPlay !== null
   const sign = tipSign(pick.tip)
@@ -1773,6 +1832,12 @@ function BoardPick({ pick, game, finished, isAdmin, autoGrade, busy, onGrade, on
               {shortDay(game.day.date)}
             </span>
             {game.game.home} – {game.game.away} · {timeOf(game.game.startsAt)}
+          </div>
+        )}
+        {/* Uživo dok traje utakmica; kad stigne zapisnik, ispod su konačni poeni i ocjena. */}
+        {live && pick.didPlay === null && (
+          <div className="mt-2">
+            <LiveLine state={live} full />
           </div>
         )}
         <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1.5">

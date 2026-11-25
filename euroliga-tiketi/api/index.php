@@ -21,6 +21,7 @@ require __DIR__ . '/notifications.php';
 // require __DIR__ . '/fantasy.php';
 require __DIR__ . '/forma.php';
 require __DIR__ . '/injuries.php';
+require __DIR__ . '/live.php';
 require __DIR__ . '/stats.php';
 require __DIR__ . '/account.php';
 require __DIR__ . '/backups.php';
@@ -204,6 +205,12 @@ if (str_starts_with($route, '/forma')) {
 if ($route === '/state' && $method === 'GET') {
     syncSafely($db);
     respond(200, loadState($db) + ['me' => mePayload($db, $user)]);
+}
+
+// Tiketi uživo: igrači sa tiketa dok traju njihove utakmice (svako ko je prijavljen).
+if (preg_match('#^/rounds/(\d+)/live$#', $route, $m) && $method === 'GET') {
+    $round = findRound($db, (int) $m[1]);
+    respond(200, liveRound($db, (int) $round['id']));
 }
 
 if (preg_match('#^/rounds/(\d+)/tickets$#', $route, $m) && $method === 'GET') {
