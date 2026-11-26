@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react'
+import { ArrowButton } from './Arrows.jsx'
 import { ChevronIcon } from './icons.jsx'
 
 const MONTHS = ['januar', 'februar', 'mart', 'april', 'maj', 'jun', 'jul', 'avgust', 'septembar', 'oktobar', 'novembar', 'decembar']
@@ -115,26 +116,11 @@ export default function DateTimePicker({ value, onSave, disabled = false, ariaLa
           className="absolute top-[calc(100%+6px)] left-0 z-30 flex w-[min(320px,calc(100vw-32px))] flex-col gap-3 rounded-xl bg-surface-hover p-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.16),0_24px_48px_-16px_rgba(0,0,0,0.9)] outline-none"
         >
           <div className="flex items-center justify-between gap-2">
-            <button
-              type="button"
-              disabled={!canGoBack}
-              onClick={() => moveMonth(-1)}
-              aria-label="Prethodni mjesec"
-              className="grid size-8 place-items-center rounded-lg text-zinc-400 ring-1 ring-line ring-inset transition hover:text-white hover:ring-white/20 disabled:pointer-events-none disabled:opacity-30"
-            >
-              <ChevronIcon direction="left" className="size-4" />
-            </button>
+            <ArrowButton direction="left" size="sm" label="Prethodni mjesec" disabled={!canGoBack} onClick={() => moveMonth(-1)} />
             <b className="font-display text-[17px] font-bold tracking-[0.06em] text-white uppercase">
               {MONTHS[view.month]} {view.year}
             </b>
-            <button
-              type="button"
-              onClick={() => moveMonth(1)}
-              aria-label="Sljedeći mjesec"
-              className="grid size-8 place-items-center rounded-lg text-zinc-400 ring-1 ring-line ring-inset transition hover:text-white hover:ring-white/20"
-            >
-              <ChevronIcon direction="right" className="size-4" />
-            </button>
+            <ArrowButton direction="right" size="sm" label="Sljedeći mjesec" onClick={() => moveMonth(1)} />
           </div>
 
           <div className="grid grid-cols-7 gap-1 text-center">

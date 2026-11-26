@@ -646,7 +646,7 @@ function formaAccuracyRounds(PDO $db): array
             $rounds[] = $round['number'];
         }
     }
-    return ['season' => formaSeasonLabel($season), 'rounds' => $rounds, 'lineModel' => formaLineModel($db)];
+    return ['season' => formaSeasonLabel($season), 'rounds' => $rounds, 'lineModel' => formaLineModel($db), 'calibration' => formaCalibration($db)];
 }
 
 // Forma kola kakva je bila prije utakmica (formaPayload uzima samo podatke od prije), plus šta su igrači dali
@@ -1097,7 +1097,7 @@ function handleFormaRoute(PDO $db, array $user, string $method, string $route): 
         $round = filter_var($_GET['round'] ?? null, FILTER_VALIDATE_INT);
         try {
             // lineModel: Maxbetovo pravilo za procjenu granice (naučeno iz uvezenih granica).
-            respond(200, formaPayload($db, $user, $round === false ? null : $round) + ['lineModel' => formaLineModel($db)]);
+            respond(200, formaPayload($db, $user, $round === false ? null : $round) + ['lineModel' => formaLineModel($db), 'calibration' => formaCalibration($db)]);
         } catch (PDOException $e) {
             // 42S02: tabela ne postoji.
             if ($e->getCode() === '42S02') {
@@ -1115,6 +1115,12 @@ function handleFormaRoute(PDO $db, array $user, string $method, string $route): 
     if ($route === '/forma/accuracy' && $method === 'GET') {
         $round = filter_var($_GET['round'] ?? null, FILTER_VALIDATE_INT);
         respond(200, $round === false || $round === null ? formaAccuracyRounds($db) : formaAccuracyRound($db, $user, $round));
+    }
+    if ($route === '/forma/calibration' && $method === 'PUT') {
+        if ($user['role'] !== 'admin') {
+            fail(403, 'Kalibraciju čuva samo admin.');
+        }
+        respond(200, formaSaveCalibration($db, readJson()));
     }
     if ($route === '/forma/absence' && $method === 'PUT') {
         if ($user['role'] !== 'admin') {
@@ -1301,5 +1307,34 @@ function formaLineModel(PDO $db): ?array
         ];
     }
     setSetting($db, 'line_model', json_encode(['key' => $key, 'model' => $model]));
+    return $model;
+}
+
+/* ---------- Kalibracija šanse ---------- */
+
+// Naučena šansa iz Tačnosti (src/calibration.js): računa je pregledač kad admin otvori Tačnost, a ovdje se
+// samo čuva i šalje svima uz Formu. null dok je nema.
+function formaCalibration(PDO $db): ?array
+{
+    $model = json_decode(getSetting($db, 'chance_model', ''), true);
+    return is_array($model) ? $model : null;
+}
+
+// Admin: {"margin": 1.5, "k": 0.6, "n": 291, "active": true, ...}. Brojevi se provjere, ostalo je za prikaz.
+function formaSaveCalibration(PDO $db, array $body): array
+{
+    // margin: prag u poenima (−2 … +4), k: stisak procenata (0.2 … 1).
+    $margin = $body['margin'] ?? null;
+    $k = $body['k'] ?? null;
+    if (!is_numeric($margin) || !is_numeric($k) || abs((float) $margin) > 10 || (float) $k < 0 || (float) $k > 1) {
+        fail(422, 'Kalibracija nije ispravna.');
+    }
+    $json = json_encode($body);
+    if ($json === false || strlen($json) > 20000) {
+        fail(422, 'Kalibracija nije ispravna.');
+    }
+    $model = ['margin' => (float) $margin, 'k' => (float) $k, 'active' => (bool) ($body['active'] ?? false)]
+        + $body + ['savedAt' => date('Y-m-d H:i')];
+    setSetting($db, 'chance_model', json_encode($model));
     return $model;
 }

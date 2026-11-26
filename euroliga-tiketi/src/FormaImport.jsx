@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from './api.js'
+import { ArrowText } from './Arrows.jsx'
 import { chanceFor, maxbetBookmarklet } from './forma.js'
 
 const LABELS = { new: 'nova', chg: 'promijenjena', same: 'ista', chk: 'provjeri', out: 'nije u kolu' }
@@ -96,8 +97,8 @@ export default function FormaImport({ data, players, maxbetRows, onClose, onSave
         <section className={cardClass} aria-labelledby="imp-h">
           <div className="flex flex-wrap items-start justify-between gap-x-5 gap-y-3 border-b border-line px-4.5 py-4">
             <div>
-              <button type="button" onClick={onClose} className="text-[13px] text-zinc-400 transition hover:text-white">
-                ‹ Nazad na Formu
+              <button type="button" onClick={onClose} className="group text-[13px] text-zinc-400 transition hover:text-white">
+                <ArrowText direction="left">Nazad na Formu</ArrowText>
               </button>
               <h2 id="imp-h" className={h2Class}>
                 Uvoz granica · Kolo {data.round}
@@ -122,8 +123,8 @@ export default function FormaImport({ data, players, maxbetRows, onClose, onSave
                 </b>{' '}
                 {save.done.tickets ? `${save.done.tickets} igrača na tiketima kola ${data.round} ima novu granicu.` : ''}
               </span>
-              <button type="button" onClick={onClose} className="text-[13px] text-zinc-400 transition hover:text-white">
-                Otvori Formu ›
+              <button type="button" onClick={onClose} className="group text-[13px] text-zinc-400 transition hover:text-white">
+                <ArrowText direction="right">Otvori Formu</ArrowText>
               </button>
             </div>
           )}
@@ -372,8 +373,8 @@ function HowTo({ hasRows, onClose }) {
       <div className="flex flex-wrap items-start justify-between gap-x-5 gap-y-3 border-b border-line px-4.5 py-4">
         <div>
           {!hasRows && (
-            <button type="button" onClick={onClose} className="text-[13px] text-zinc-400 transition hover:text-white">
-              ‹ Nazad na Formu
+            <button type="button" onClick={onClose} className="group text-[13px] text-zinc-400 transition hover:text-white">
+              <ArrowText direction="left">Nazad na Formu</ArrowText>
             </button>
           )}
           <h2 id="how-h" className={h2Class}>

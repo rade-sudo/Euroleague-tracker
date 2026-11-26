@@ -59,7 +59,7 @@ export function EyeOffIcon({ className }) {
 
 export function AlertIcon({ className }) {
   return (
-    <Icon className={className} strokeWidth={2.2}>
+    <Icon className={className} strokeWidth={2.4}>
       <circle cx="12" cy="12" r="9" />
       <path d="M12 7.5v5.5M12 16.5v.01" />
     </Icon>
@@ -77,8 +77,8 @@ export function LockIcon({ className }) {
 
 export function ChevronIcon({ className, direction = 'right' }) {
   return (
-    <Icon className={className} strokeWidth={2.2}>
-      <path d={direction === 'left' ? 'M15 6l-6 6 6 6' : 'M9 6l6 6-6 6'} />
+    <Icon className={className} strokeWidth={2.4}>
+      <path d={direction === 'left' ? 'M14.5 6 8.5 12l6 6' : 'M9.5 6l6 6-6 6'} />
     </Icon>
   )
 }
@@ -94,7 +94,7 @@ export function UserIcon({ className }) {
 
 export function DownloadIcon({ className }) {
   return (
-    <Icon className={className} strokeWidth={2.2}>
+    <Icon className={className} strokeWidth={2.4}>
       <path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19h14" />
     </Icon>
   )
@@ -120,7 +120,7 @@ export function ShareIcon({ className }) {
 
 export function TrophyIcon({ className }) {
   return (
-    <Icon className={className} strokeWidth={2.2}>
+    <Icon className={className} strokeWidth={2.4}>
       <path d="M7 4h10v5a5 5 0 0 1-10 0z" />
       <path d="M7 6H4.5a2.5 2.5 0 0 0 2.6 3.4M17 6h2.5a2.5 2.5 0 0 1-2.6 3.4M12 14v4M8 20h8" />
     </Icon>

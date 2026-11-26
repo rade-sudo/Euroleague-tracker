@@ -1,6 +1,7 @@
 // Tačnost Forme: za odigrano kolo Forma se izračuna kakva je bila prije utakmica (server šalje samo podatke
 // od prije), pa se uporedi sa zapisnikom. Računa se ovdje, istom formulom kao Forma, pa svaka promjena
 // formule odmah pokazuje kako bi prošla na cijeloj sezoni.
+import { features } from './calibration.js'
 import { bestPicks, chance, enrichRound } from './forma.js'
 
 // Grupe šanse; zadnja ide do 80% (više Forma ne daje).
@@ -50,7 +51,21 @@ export function roundAccuracy(data) {
       continue
     }
     const maxbet = p.lineSrc === 'maxbet'
-    rows.push({ p, round: data.round, pts: r.pts, min: r.min, err: Math.abs(p.proj.pts.value - r.pts), maxbet, hit: maxbet ? passes(p.chance.tip, r.pts, p.line) : null })
+    rows.push({
+      p,
+      round: data.round,
+      pts: r.pts,
+      min: r.min,
+      err: Math.abs(p.proj.pts.value - r.pts),
+      maxbet,
+      hit: maxbet ? passes(p.chance.tip, r.pts, p.line) : null,
+      // Za kalibraciju šanse: podaci o igraču, da li je prošao plus, i šta je rekla stara formula.
+      x: maxbet ? features(p, p.line) : null,
+      // Utakmica sa uvozom sa Maxbeta (granice za sve igrače); samo iz njih se uči kalibracija.
+      imported: p.offer === true,
+      overHit: maxbet ? r.pts > p.line : null,
+      oldOver: p.chanceOld?.over ?? null,
+    })
   }
 
   const best = []

@@ -1,5 +1,6 @@
 // Forma igrača: projekcija, procjena granice i šansa za tiket.
 // Ista formula je opisana na dnu stranice Forma ("Kako se računa projekcija").
+import { calibratedOver, isCalibrated } from './calibration.js'
 
 // Novija utakmica nosi više: zadnja 5, pa 4, 3, 2, 1.
 const WEIGHTS = [5, 4, 3, 2, 1]
@@ -11,9 +12,17 @@ const VS_FULL_GAMES = 4
 const HOME_FACTOR = 1.03
 const AWAY_FACTOR = 0.97
 const MIN_SD = 3
-// Odsutni saigrači: 3/4 njihovih minuta ide igračima iste pozicije, po minutama u sezoni.
+// Odsutni saigrači: 3/4 njihovih minuta se dijeli onima koji igraju (vidi absenceBoost).
 const SAME_POS_SHARE = 0.75
-const MAX_MINUTES = 34
+// Po igraču najviše 6 minuta više, i ne više od 35% njegovih minuta u sezoni.
+const MAX_EXTRA_MINUTES = 6
+const MAX_EXTRA_SHARE = 0.35
+const POS_WEIGHT = {
+  G: { G: 1, F: 0.6, C: 0.15 },
+  F: { G: 0.6, F: 1, C: 0.6 },
+  C: { G: 0.15, F: 0.6, C: 1 },
+}
+const OTHER_POS = 0.15
 // Stvarni prosjek "bez njih" ulazi u projekciju tek od 3 takve utakmice.
 const WITHOUT_MIN_GAMES = 3
 // Nove minute nose nesigurnost: oscilacija +15%.
@@ -31,22 +40,25 @@ const surname = (name) => name.split(' ').slice(-1)[0]
 // "nema ga na Maxbetu", "nije igrao zadnju" i upitni su samo oznaka na njemu.
 export const sureOut = (absence) => absence?.status === 'out' && (absence.source === 'basketnews' || absence.source === 'admin')
 
-// Koliko minuta igrač dobija jer saigrači iste pozicije sigurno ne igraju.
-// null ako nema odsutnih na njegovoj poziciji, ili ni sam ne igra.
+// Koliko minuta igrač dobija jer saigrači sigurno ne igraju. Tri četvrtine minuta odsutnog dijele se svima
+// koji igraju, po minutama u sezoni i poziciji: ista pozicija puna težina, susjedna (bek–krilo, krilo–centar)
+// 0.6, ostale 0.15. Niko ne dobija više od 6 minuta ni više od 35% svojih minuta (Barcelona bez Neba:
+// minute nisu otišle jedinom centru, nego krilima). null ako nema odsutnih ili ni sam ne igra.
 export function absenceBoost(player, teammates) {
   if ((player.absence?.weight ?? 0) >= 0.5 || !(player.season.min > 0)) return null
   const receives = (t) => !((t.absence?.weight ?? 0) >= 0.5) && t.season.min > 0
   let minutes = 0
   const names = []
   for (const absent of teammates) {
-    if (absent.id === player.id || !sureOut(absent.absence) || !(absent.absence.min > 0) || absent.pos !== player.pos) continue
-    const group = teammates.filter((t) => t.pos === absent.pos && receives(t))
-    const total = group.reduce((sum, t) => sum + t.season.min, 0)
+    if (absent.id === player.id || !sureOut(absent.absence) || !(absent.absence.min > 0)) continue
+    const weight = (t) => (POS_WEIGHT[absent.pos]?.[t.pos] ?? OTHER_POS) * t.season.min
+    const total = teammates.filter((t) => t.id !== absent.id && receives(t)).reduce((sum, t) => sum + weight(t), 0)
     if (!total) continue
-    minutes += (SAME_POS_SHARE * absent.absence.min * player.season.min) / total
-    names.push(surname(absent.name))
+    const share = (SAME_POS_SHARE * absent.absence.min * weight(player)) / total
+    minutes += share
+    if (share >= 0.3) names.push(surname(absent.name))
   }
-  minutes = Math.min(minutes, Math.max(0, MAX_MINUTES - player.season.min))
+  minutes = Math.min(minutes, MAX_EXTRA_MINUTES, MAX_EXTRA_SHARE * player.season.min)
   return minutes >= 0.5 ? { minutes, names } : null
 }
 
@@ -145,10 +157,19 @@ function phi(z) {
 
 // Šansa da prođe tip: "+" ako je projekcija iznad granice, inače "−".
 // shrink ("Maxbet zna nešto"): šansa se prepolovi prema 50%. Nikad preko 80%.
-export function chance(line, projection, sd, shrink = false) {
+// calibration: naučena šansa iz Tačnosti (src/calibration.js); kad je uključena, zamjenjuje normalnu raspodjelu
+// (i "Maxbet zna nešto" se više ne prepolovljava, jer ga kalibracija već uzima u obzir).
+export function chance(line, projection, sd, shrink = false, player = null, calibration = null) {
+  if (isCalibrated(calibration) && player) {
+    return fromOver(calibratedOver(calibration, projection, line, sd), sd)
+  }
   let over = 1 - phi((line - projection) / sd)
   if (shrink) over = 0.5 + (over - 0.5) / 2
   over = Math.min(MAX_CHANCE, Math.max(1 - MAX_CHANCE, over))
+  return fromOver(over, sd)
+}
+
+function fromOver(over, sd) {
   const tip = over >= 0.5 ? '+' : '−'
   return { over, tip, pct: Math.round((tip === '+' ? over : 1 - over) * 100), sd }
 }
@@ -179,7 +200,7 @@ function absenceFlag(absence) {
 }
 
 // teammates: svi igrači njegovog tima u kolu (za odsutne saigrače).
-export function enrichPlayer(player, defense, doubleTeams, teammates = [], lineModel = null) {
+export function enrichPlayer(player, defense, doubleTeams, teammates = [], lineModel = null, calibration = null) {
   const boost = absenceBoost(player, teammates)
   const proj = {
     pts: project(player, 'pts', defense, boost),
@@ -229,7 +250,10 @@ export function enrichPlayer(player, defense, doubleTeams, teammates = [], lineM
     line,
     offered,
     lineSrc: player.line !== null ? 'maxbet' : offered ? 'procjena' : 'nema',
-    chance: chance(line, proj.pts.value, sd, guard),
+    chance: chance(line, proj.pts.value, sd, guard, player, calibration),
+    // Stara šansa (moja formula), za poređenje u Tačnosti.
+    chanceOld: chance(line, proj.pts.value, sd, guard),
+    calibration,
     boost,
     guard,
     // Ne igra ili je upitan: ne nudi se u "Najbolje šanse kola".
@@ -295,7 +319,9 @@ export function enrichRound(data) {
   const doubleTeams = new Set(data.double)
   const byTeam = new Map()
   for (const player of data.players) byTeam.set(player.team, [...(byTeam.get(player.team) ?? []), player])
-  return data.players.map((player) => enrichPlayer(player, data.defense, doubleTeams, byTeam.get(player.team), data.lineModel))
+  return data.players.map((player) =>
+    enrichPlayer(player, data.defense, doubleTeams, byTeam.get(player.team), data.lineModel, data.calibration),
+  )
 }
 
 // Tipovi PS / PA / PAS: projekcija zbira i koliko zbir oscilira (zadnjih 10 u kojima je igrao).
@@ -313,6 +339,6 @@ function statSd(player, stat) {
 
 // Šansa po Formi za tip sa tiketa: poeni (i manja / veća granica) ili zbir, prema datoj granici.
 export function formaForTip(player, stat, line) {
-  if (stat === 'pts') return chance(line, player.proj.pts.value, player.chance.sd)
+  if (stat === 'pts') return chance(line, player.proj.pts.value, player.chance.sd, false, player, player.calibration)
   return chance(line, statProjection(player, stat), statSd(player, stat))
 }

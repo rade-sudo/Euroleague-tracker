@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from './api.js'
 import { fix1 } from './forma.js'
+import { buildCalibration, CALIBRATION_MIN } from './calibration.js'
 import { BUCKETS, calibrationVerdict, MIN_SAMPLE, roundAccuracy, summarize } from './formaAccuracy.js'
 
 const cardClass =
@@ -33,22 +34,22 @@ async function loadRound(round) {
   }
 }
 
-export default function FormaAccuracy() {
-  const [state, setState] = useState({ status: 'loading', season: '', total: 0, rounds: [], lineModel: null, error: '' })
+export default function FormaAccuracy({ isAdmin = false }) {
+  const [state, setState] = useState({ status: 'loading', season: '', total: 0, rounds: [], lineModel: null, calibration: null, error: '' })
 
   useEffect(() => {
     let ignore = false
     api('/forma/accuracy').then(
       async (list) => {
         if (ignore) return
-        setState((s) => ({ ...s, season: list.season, total: list.rounds.length, lineModel: list.lineModel ?? null }))
+        setState((s) => ({ ...s, season: list.season, total: list.rounds.length, lineModel: list.lineModel ?? null, calibration: list.calibration ?? null }))
         const queue = [...list.rounds]
         const results = []
         const worker = async () => {
           while (queue.length && !ignore) {
             const round = queue.shift()
             // Isto Maxbetovo pravilo kao u Formi (procjena granice, "Maxbet zna nešto").
-            results.push(roundAccuracy({ ...(await loadRound(round)), lineModel: list.lineModel ?? null }))
+            results.push(roundAccuracy({ ...(await loadRound(round)), lineModel: list.lineModel ?? null, calibration: list.calibration ?? null }))
             if (!ignore) setState((s) => ({ ...s, rounds: [...results].sort((a, b) => a.round - b.round) }))
           }
         }
@@ -67,6 +68,23 @@ export default function FormaAccuracy() {
   }, [])
 
   const summary = useMemo(() => (state.status === 'ready' ? summarize(state.rounds) : null), [state.status, state.rounds])
+  // Naučena šansa iz svih igrača sa Maxbet granicom i rezultatom. Kad je admin otvori, sama se sačuva na
+  // serveru (ako se promijenila), pa je svi koriste u Formi i na tiketu.
+  const learned = useMemo(() => {
+    if (state.status !== 'ready') return null
+    const rows = state.rounds.flatMap((r) => r.rows.filter((x) => x.maxbet && x.x && x.imported))
+    return buildCalibration(rows.map((x) => ({ round: x.round, x: x.x, y: x.overHit, oldOver: x.oldOver })))
+  }, [state.status, state.rounds])
+  const saved = state.calibration
+  const changed =
+    learned && learned.margin !== undefined && (!saved || ['margin', 'k', 'n', 'active'].some((key) => saved[key] !== learned[key]))
+  useEffect(() => {
+    if (!isAdmin || !changed) return
+    api('/forma/calibration', { method: 'PUT', body: JSON.stringify(learned) }).then(
+      (model) => setState((s) => ({ ...s, calibration: model })),
+      () => {},
+    )
+  }, [isAdmin, changed, learned])
 
   if (state.status === 'error') {
     return (
@@ -139,6 +157,7 @@ export default function FormaAccuracy() {
 
       <Misses summary={summary} />
       <LineModel model={state.lineModel} />
+      <ChanceModel model={learned} saved={state.calibration} isAdmin={isAdmin} />
     </>
   )
 }
@@ -621,5 +640,110 @@ function ModelScatter({ points }) {
         return <circle key={i} cx={x(rule)} cy={y(line)} r="4.5" fill={color} fillOpacity="0.75" stroke="#12141a" strokeWidth="1" />
       })}
     </svg>
+  )
+}
+
+// "Naučena šansa": prag za plus i koliko su procenti pouzdani, i da li je bolja od stare formule
+// (i od pravila "uvijek minus") na kolu koje nije vidjela.
+function ChanceModel({ model, saved, isAdmin }) {
+  if (!model) return null
+  const status = model.margin === undefined ? 'few' : model.active ? 'on' : 'wait'
+  const pill = {
+    on: ['Uključena', 'bg-neon/10 text-neon'],
+    wait: ['Čeka provjeru', 'bg-gold/10 text-gold'],
+    few: ['Premalo igrača', 'bg-white/5 text-zinc-400'],
+  }[status]
+  const check = model.check
+  return (
+    <section className={cardClass} aria-labelledby="acc-chance">
+      <div className={cardHeadClass}>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+          <h2 id="acc-chance" className={h2Class}>
+            Naučena šansa
+          </h2>
+          <span className={`rounded-[5px] px-1.75 py-0.5 font-display text-[11px] font-bold tracking-[0.12em] uppercase ${pill[1]}`}>{pill[0]}</span>
+        </div>
+        <p className={subClass}>
+          Uči se iz {model.n} igrača u utakmicama sa uvozom sa Maxbeta (granice sa tiketa se ne broje, jer su to vaši izbori). Projekcija i
+          dalje bira smjer tipa. Uključuje se kad na najnovijem kolu, koje nije vidjela, pogađa bar koliko stara formula.{' '}
+          {isAdmin ? (saved?.savedAt ? `Sačuvana ${saved.savedAt}.` : 'Čuva se sama kad ti otvoriš Tačnost.') : ''}
+        </p>
+      </div>
+      {status === 'few' ? (
+        <p className="px-4.5 py-5 text-sm text-zinc-400">
+          Uči se od {CALIBRATION_MIN} igrača iz utakmica sa uvozom; sada ih je {model.n}. Svako kolo sa uvozom sa Maxbeta dodaje 50–80.
+        </p>
+      ) : (
+        <div className="grid gap-px bg-line min-[861px]:grid-cols-2">
+          <div className="flex min-w-0 flex-col gap-2.5 bg-surface px-4.5 py-4 text-[13.5px] leading-relaxed text-zinc-300">
+            <h3 className={h3Class}>Šta je naučila</h3>
+            <p>
+              U ovim utakmicama plus je prošao <b className="text-white">{model.base}%</b>, a minus <b className="text-white">{100 - model.base}%</b>.
+            </p>
+            <p>
+              Zato Forma kaže <b className="text-neon">plus</b> tek kad je projekcija{' '}
+              <b className="text-white">
+                {model.margin === 0 ? 'iznad granice' : model.margin > 0 ? `bar ${fix1(model.margin)} poena iznad granice` : `najviše ${fix1(-model.margin)} poena ispod granice`}
+              </b>
+              ; inače kaže minus.
+            </p>
+            <p>
+              Procenti moje formule su stisnuti na <b className="text-white">{Math.round(model.k * 100)}%</b> svoje razlike od 50%
+              {model.k < 0.6 ? ', jer su bili previše sigurni.' : '.'}
+            </p>
+            {check && (
+              <p className="text-zinc-400">
+                Na {check.round}. kolu ovako: <b className="text-neon">{check.new.plus} plus</b> i{' '}
+                <b className="text-sky">{check.new.n - check.new.plus} minus</b> tipova.
+              </p>
+            )}
+          </div>
+          <div className="flex min-w-0 flex-col gap-2.5 bg-surface px-4.5 py-4">
+            <h3 className={h3Class}>Stara i nova</h3>
+            <table className="w-full border-collapse text-[13px] tabular-nums">
+              <thead>
+                <tr className="font-display text-[10.5px] tracking-[0.14em] text-zinc-500 uppercase">
+                  <th className="pb-1.5 text-left font-semibold" />
+                  <th className="pb-1.5 text-right font-semibold">Stara</th>
+                  <th className="pb-1.5 text-right font-semibold">Nova</th>
+                </tr>
+              </thead>
+              <tbody>
+                {check && <ScoreRow label={`Tip pogođen, kolo ${check.round} (nije ga vidjela)`} old={check.old} next={check.new} />}
+                <ScoreRow label="Tip pogođen, sva kola sa uvozom (na njima je i učila)" old={model.all.old} next={model.all.new} />
+              </tbody>
+            </table>
+            {check?.minus && (
+              <p className="text-xs text-zinc-500 tabular-nums">
+                Poređenja radi, „uvijek minus“ bi na {check.round}. kolu pogodio {check.minus.hit}%.
+              </p>
+            )}
+            <p className="text-xs leading-relaxed text-zinc-500">
+              „Greška procenata“ (manje je bolje) pokazuje koliko su procenti blizu stvarnosti.
+              {!check && ' Za provjeru treba bar 40 igrača u najnovijem kolu sa uvozom.'}
+            </p>
+          </div>
+        </div>
+      )}
+    </section>
+  )
+}
+
+
+function ScoreRow({ label, old, next }) {
+  const better = next.brier <= old.brier
+  return (
+    <>
+      <tr className="border-t border-line">
+        <td className="py-1.75 text-zinc-300">{label}</td>
+        <td className="py-1.75 text-right text-zinc-400">{old.hit}%</td>
+        <td className={`py-1.75 text-right font-semibold ${next.hit >= old.hit ? 'text-neon' : 'text-rose-400'}`}>{next.hit}%</td>
+      </tr>
+      <tr>
+        <td className="pb-1.75 pl-3 text-xs text-zinc-500">greška procenata</td>
+        <td className="pb-1.75 text-right text-xs text-zinc-500">{old.brier.toFixed(3)}</td>
+        <td className={`pb-1.75 text-right text-xs font-semibold ${better ? 'text-neon' : 'text-rose-400'}`}>{next.brier.toFixed(3)}</td>
+      </tr>
+    </>
   )
 }

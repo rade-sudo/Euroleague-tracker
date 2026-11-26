@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { api } from './api.js'
 import AppHeader from './AppHeader.jsx'
+import { RoundStepper } from './Arrows.jsx'
 import { XIcon } from './icons.jsx'
 import { ABSENCE_SOURCES, bestPicks, enrichRound, sureOut, fix1, FORMA_GRID, hitsOver, hitsUnder, pctTone, playedCount, readMaxbetHash } from './forma.js'
 import FormaAccuracy from './FormaAccuracy.jsx'
@@ -183,7 +184,7 @@ export default function FormaPage() {
               ))}
             </div>
             {page === 'tacnost' ? (
-              <FormaAccuracy />
+              <FormaAccuracy isAdmin={data.isAdmin} />
             ) : (
               <FormaContent
                 data={data}
@@ -228,30 +229,15 @@ function FormaContent({ data, players, onImport, view, onView, onJump, openedAt,
   return (
     <>
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2.5">
-          <button
-            type="button"
-            aria-label="Prethodno kolo"
-            disabled={index <= 0 || roundState.busy}
-            onClick={() => onRound(numbers[index - 1])}
-            className="grid size-8 place-items-center rounded-lg bg-surface text-zinc-400 ring-1 ring-white/12 ring-inset transition hover:text-white disabled:opacity-40"
-          >
-            ‹
-          </button>
-          <div className={roundState.busy ? 'opacity-60' : ''}>
-            <b className="font-display text-[22px] font-bold tracking-wider text-white uppercase">Kolo {data.round}</b>{' '}
-            <span className="text-[13px] text-zinc-400">· {roundDaysLabel(data.games)}</span>
-          </div>
-          <button
-            type="button"
-            aria-label="Sljedeće kolo"
-            disabled={index >= numbers.length - 1 || roundState.busy}
-            onClick={() => onRound(numbers[index + 1])}
-            className="grid size-8 place-items-center rounded-lg bg-surface text-zinc-400 ring-1 ring-white/12 ring-inset transition hover:text-white disabled:opacity-40"
-          >
-            ›
-          </button>
-        </div>
+        <RoundStepper
+          title={`Kolo ${data.round}`}
+          sub={roundDaysLabel(data.games)}
+          busy={roundState.busy}
+          prevDisabled={index <= 0}
+          nextDisabled={index >= numbers.length - 1}
+          onPrev={() => onRound(numbers[index - 1])}
+          onNext={() => onRound(numbers[index + 1])}
+        />
         {data.pending !== 0 && (
           <span className="rounded-md border border-dashed border-gold/40 px-2 py-1 text-xs text-gold">
             {data.pending === null
@@ -666,7 +652,7 @@ function Method() {
     ['4. Odbrana protivnika', 'Koliko poena protivnik prima od igrača te pozicije, u odnosu na prosjek lige (najviše ±15%).'],
     [
       '5. Odsutni saigrači',
-      'Ko sigurno ne igra (Out na BasketNewsu, ili admin označi "Ne igra") oslobađa svoje minute iz zadnjih 5. Tri četvrtine idu igračima iste pozicije, po minutama u sezoni. Od 3 utakmice bez njih uzima se i stvarni prosjek. "Nema ga na Maxbetu", "nije igrao zadnju" i upitni dobiju samo oznaku.',
+      'Ko sigurno ne igra (Out na BasketNewsu, ili admin označi "Ne igra") oslobađa svoje minute iz zadnjih 5. Tri četvrtine se dijele svima koji igraju: ista pozicija puna težina, susjedna 0.6, ostale 0.15, po minutama u sezoni; niko ne dobija više od 6 minuta. Od 3 utakmice bez njih uzima se i stvarni prosjek. "Nema ga na Maxbetu", "nije igrao zadnju" i upitni dobiju samo oznaku.',
     ],
     [
       'Granica',
@@ -674,7 +660,7 @@ function Method() {
     ],
     [
       'Šansa za tiket',
-      'Projekcija naspram granice, uz to koliko igrač oscilira. Stalan igrač na 17 uz granicu 15.5 je sigurniji od onog koji igra 8 pa 26. Nikad preko 80%.',
+      'Naučena iz stvarnih rezultata (Tačnost → Naučena šansa): koliko često igrači prođu preko granice, koliko vrijedi projekcija prema granici i koliko puta je igrač u zadnjih 10 prešao tu granicu. Dok se ne nauči, moja formula: projekcija naspram granice i koliko igrač oscilira. Nikad preko 80%.',
     ],
     [
       'Maxbet zna nešto',

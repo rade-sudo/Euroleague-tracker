@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from './api.js'
 import AppHeader from './AppHeader.jsx'
+import { ArrowButton } from './Arrows.jsx'
 import FriendStats from './FriendStats.jsx'
 import { normalizePlayerName } from './players.js'
 import RoundWinners from './RoundWinners.jsx'
@@ -532,9 +533,7 @@ function PlayersCard({ players, me, friendShort, expanded, onToggle }) {
       {(pages > 1 || found.length > PER_PAGE[0]) && (
         <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2.5 border-t border-line px-4.5 py-3">
           <nav aria-label="Stranice" className="flex items-center gap-1">
-            <button type="button" aria-label="Prethodna stranica" disabled={current === 1} onClick={() => goTo(current - 1)} className={`${pageButton} text-zinc-400 hover:bg-surface-hover hover:text-white`}>
-              ‹
-            </button>
+            <ArrowButton direction="left" size="sm" label="Prethodna stranica" disabled={current === 1} onClick={() => goTo(current - 1)} />
             {pageList(current, pages).map((p) =>
               typeof p === 'string' ? (
                 <span key={p} className="px-0.5 text-zinc-600">
@@ -552,9 +551,7 @@ function PlayersCard({ players, me, friendShort, expanded, onToggle }) {
                 </button>
               ),
             )}
-            <button type="button" aria-label="Sljedeća stranica" disabled={current === pages} onClick={() => goTo(current + 1)} className={`${pageButton} text-zinc-400 hover:bg-surface-hover hover:text-white`}>
-              ›
-            </button>
+            <ArrowButton direction="right" size="sm" label="Sljedeća stranica" disabled={current === pages} onClick={() => goTo(current + 1)} />
           </nav>
           <div className="flex items-center gap-1.5 text-[12.5px] text-zinc-400" role="group" aria-label="Igrača po stranici">
             <span>Po stranici</span>

@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useEffectEvent, useRef, useState } from 'react'
 import { api } from './api.js'
-import { ChevronIcon, EyeIcon, LockIcon, TrophyIcon, XIcon } from './icons.jsx'
+import { ArrowButton } from './Arrows.jsx'
+import { EyeIcon, LockIcon, TrophyIcon, XIcon } from './icons.jsx'
 import PlayerInput from './PlayerInput.jsx'
 import { km, moneyInput } from './money.js'
 import { buildPlayerIndex, normalizePlayerName } from './players.js'
@@ -678,14 +679,14 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
               Kolo {round.number}
             </h2>
             {sortedRounds.length > 1 && (
-              <div className="flex gap-1">
-                <RoundNavButton
+              <div className="flex gap-1 rounded-[13px] bg-surface p-1 ring-1 ring-line ring-inset">
+                <ArrowButton
                   direction="left"
                   label="Prethodno kolo"
                   disabled={roundIndex <= 0}
                   onClick={() => selectRound(sortedRounds[roundIndex - 1])}
                 />
-                <RoundNavButton
+                <ArrowButton
                   direction="right"
                   label="Sljedeće kolo"
                   disabled={roundIndex >= sortedRounds.length - 1}
@@ -1065,20 +1066,6 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
         ))}
       </div>
     </section>
-  )
-}
-
-function RoundNavButton({ direction, label, disabled, onClick }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      aria-label={label}
-      className="grid size-8 place-items-center rounded-lg text-zinc-400 ring-1 ring-line ring-inset transition hover:text-white hover:ring-white/20 disabled:pointer-events-none disabled:opacity-30"
-    >
-      <ChevronIcon direction={direction} className="size-4" />
-    </button>
   )
 }
 

@@ -1,3 +1,4 @@
+import { ArrowText } from './Arrows.jsx'
 import { TrophyIcon } from './icons.jsx'
 import { km } from './money.js'
 
@@ -156,8 +157,8 @@ export default function MyOverview({ friends, rounds, results, winners, me }) {
               : 'Još nisi predao'}
           </b>
           {me.round.deadline && <span className="text-zinc-400">rok {deadlineText(me.round.deadline)}</span>}
-          <a href="#round-title" className="text-[13px] font-semibold text-accent underline-offset-4 hover:underline">
-            Na tiket →
+          <a href="#round-title" className="group text-[13px] font-semibold text-accent underline-offset-4 hover:underline">
+            <ArrowText direction="right">Na tiket</ArrowText>
           </a>
         </div>
       )}
