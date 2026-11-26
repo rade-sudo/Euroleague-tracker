@@ -34,20 +34,21 @@ async function loadRound(round) {
 }
 
 export default function FormaAccuracy() {
-  const [state, setState] = useState({ status: 'loading', season: '', total: 0, rounds: [], error: '' })
+  const [state, setState] = useState({ status: 'loading', season: '', total: 0, rounds: [], lineModel: null, error: '' })
 
   useEffect(() => {
     let ignore = false
     api('/forma/accuracy').then(
       async (list) => {
         if (ignore) return
-        setState((s) => ({ ...s, season: list.season, total: list.rounds.length }))
+        setState((s) => ({ ...s, season: list.season, total: list.rounds.length, lineModel: list.lineModel ?? null }))
         const queue = [...list.rounds]
         const results = []
         const worker = async () => {
           while (queue.length && !ignore) {
             const round = queue.shift()
-            results.push(roundAccuracy(await loadRound(round)))
+            // Isto Maxbetovo pravilo kao u Formi (procjena granice, "Maxbet zna nešto").
+            results.push(roundAccuracy({ ...(await loadRound(round)), lineModel: list.lineModel ?? null }))
             if (!ignore) setState((s) => ({ ...s, rounds: [...results].sort((a, b) => a.round - b.round) }))
           }
         }
@@ -137,6 +138,7 @@ export default function FormaAccuracy() {
       </section>
 
       <Misses summary={summary} />
+      <LineModel model={state.lineModel} />
     </>
   )
 }
@@ -420,5 +422,204 @@ function Misses({ summary }) {
         Maxbeta).
       </p>
     </section>
+  )
+}
+
+const pct = (value) => `${Math.round(value * 100)}%`
+const signed = (value) => (value > 0 ? `+${value}` : `−${Math.abs(value)}`)
+
+// "Kako Maxbet postavlja granice": pravilo naučeno iz uvezenih granica, tačnost prema staroj procjeni,
+// grafikon pravilo / prava granica i gdje Maxbet odstupa od svog pravila.
+function LineModel({ model }) {
+  if (!model) {
+    return (
+      <section className={cardClass} aria-labelledby="acc-model">
+        <div className={cardHeadClass}>
+          <h2 id="acc-model" className={h2Class}>
+            Kako Maxbet postavlja granice
+          </h2>
+          <p className={subClass}>Još nema uvezenih granica. Pravilo se uči iz svakog uvoza sa Maxbeta.</p>
+        </div>
+      </section>
+    )
+  }
+  const sezona = Math.max(0, model.b)
+  const forma = Math.max(0, model.c)
+  return (
+    <section className={cardClass} aria-labelledby="acc-model">
+      <div className={cardHeadClass}>
+        <h2 id="acc-model" className={h2Class}>
+          Kako Maxbet postavlja granice
+        </h2>
+        <p className={subClass}>
+          Naučeno iz {model.n} granica ({model.rounds.length === 1 ? `kolo ${model.rounds[0]}` : `kola ${model.rounds.join(', ')}`}). Koristi se za procjenu
+          granice prije uvoza i za „Maxbet zna nešto“.{' '}
+          {model.active
+            ? 'Mjeri se na istim granicama iz kojih je naučeno.'
+            : `Uključuje se od ${model.min} granica; do tada ostaje stara procjena.`}
+        </p>
+      </div>
+      <div className="grid gap-px bg-line min-[861px]:grid-cols-2">
+        <Formula
+          tag={model.active ? 'Naučeno · koristi se' : `Uči se · ${model.n} od ${model.min}`}
+          on={model.active}
+          text={
+            <>
+              granica ≈ <b className="text-accent">{pct(sezona)}</b> sezona + <b className="text-accent">{pct(forma)}</b> forma{' '}
+              {model.a >= 0 ? '+' : '−'} {fix1(Math.abs(model.a))}
+            </>
+          }
+          weights={[sezona, forma]}
+          score={model.rule}
+        />
+        <Formula
+          tag={model.active ? 'Do sada' : 'Koristi se'}
+          on={!model.active}
+          text={
+            <>
+              granica ≈ <b>60%</b> sezona + <b>40%</b> forma
+            </>
+          }
+          weights={[0.6, 0.4]}
+          score={model.old}
+        />
+      </div>
+      <div className="grid gap-px border-t border-line bg-line min-[861px]:grid-cols-[1.3fr_1fr]">
+        <div className="flex min-w-0 flex-col gap-3 bg-surface px-4.5 py-4">
+          <ModelScatter points={model.points} />
+          <div className="flex flex-wrap gap-x-3.5 gap-y-1.5 text-xs text-zinc-400">
+            <span>
+              <i className="mr-1.5 inline-block size-2.25 rounded-full bg-neon align-[-1px]" />
+              ±1 poen
+            </span>
+            <span>
+              <i className="mr-1.5 inline-block size-2.25 rounded-full bg-gold align-[-1px]" />
+              Maxbet viši od svog pravila
+            </span>
+            <span>
+              <i className="mr-1.5 inline-block size-2.25 rounded-full bg-sky align-[-1px]" />
+              Maxbet niži
+            </span>
+          </div>
+        </div>
+        <div className="flex min-w-0 flex-col gap-3 bg-surface px-4.5 py-4">
+          <h3 className={h3Class}>
+            Gdje Maxbet odstupa
+            <small className="ml-1.5 font-sans text-xs font-medium tracking-normal text-zinc-400 normal-case">od svog pravila</small>
+          </h3>
+          {model.deviations.length ? (
+            <table className="w-full border-collapse text-[13px] tabular-nums">
+              <thead>
+                <tr className="font-display text-[10.5px] tracking-[0.14em] text-zinc-500 uppercase">
+                  <th className="pb-1.5 text-left font-semibold">Igrač</th>
+                  <th className="pb-1.5 pl-2.5 text-right font-semibold">Kolo</th>
+                  <th className="pb-1.5 pl-2.5 text-right font-semibold">Pravilo</th>
+                  <th className="pb-1.5 pl-2.5 text-right font-semibold">Maxbet</th>
+                  <th className="pb-1.5 pl-2.5 text-right font-semibold">Razlika</th>
+                </tr>
+              </thead>
+              <tbody>
+                {model.deviations.map((d) => (
+                  <tr key={`${d.round}-${d.name}`} className="border-t border-line">
+                    <td className="py-2">
+                      <b className="font-semibold text-white">{d.name}</b> <span className="text-[11px] text-zinc-500">{d.team}</span>
+                    </td>
+                    <td className="py-2 pl-2.5 text-right text-zinc-400">{d.round}</td>
+                    <td className="py-2 pl-2.5 text-right text-zinc-300">{d.rule}</td>
+                    <td className="py-2 pl-2.5 text-right text-zinc-300">{d.line}</td>
+                    <td className={`py-2 pl-2.5 text-right font-bold ${d.diff > 0 ? 'text-gold' : 'text-sky'}`}>{signed(d.diff)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <p className="text-[13px] text-zinc-400">Maxbet se zasad drži svog pravila: nijedna granica nije 2 ili više poena daleko.</p>
+          )}
+          <p className="text-[12.5px] leading-relaxed text-zinc-500">
+            Ovdje je Maxbet namjerno otišao od svog pravila: povreda saigrača, nova uloga, minute. Kad je granica viša za bar 3 poena, Forma
+            pali „Maxbet zna nešto“.
+          </p>
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function Formula({ tag, on, text, weights, score }) {
+  return (
+    <div className="flex min-w-0 flex-col gap-2.5 bg-surface px-4.5 py-4">
+      <span
+        className={`self-start rounded-[5px] px-1.75 py-0.5 font-display text-[11px] font-bold tracking-[0.12em] uppercase ${
+          on ? 'bg-neon/10 text-neon' : 'bg-white/5 text-zinc-400'
+        }`}
+      >
+        {tag}
+      </span>
+      <div className={`font-display text-[22px] leading-tight font-bold tabular-nums ${on ? 'text-white' : 'text-zinc-400'}`}>{text}</div>
+      <div>
+        <div className="flex h-2.5 overflow-hidden rounded-full bg-white/6">
+          <i className={`block h-full ${on ? 'bg-accent' : 'bg-zinc-400'}`} style={{ width: `${weights[0] * 100}%` }} />
+          <i className={`block h-full ${on ? 'bg-gold' : 'bg-zinc-600'}`} style={{ width: `${weights[1] * 100}%` }} />
+        </div>
+        <div className="mt-1 flex justify-between text-xs text-zinc-500">
+          <span>sezona</span>
+          <span>forma zadnjih 5</span>
+        </div>
+      </div>
+      <div className="grid grid-cols-3 gap-2 tabular-nums">
+        {[
+          ['Pogodi tačno', `${score.exact}%`],
+          ['±1 poen', `${score.within1}%`],
+          ['Promaši u prosjeku', fix1(score.mae)],
+        ].map(([label, value]) => (
+          <div key={label} className="rounded-[9px] bg-surface-2 px-2.5 py-2 ring-1 ring-line ring-inset">
+            <span className="block font-display text-[10.5px] font-semibold tracking-[0.12em] text-zinc-500 uppercase">{label}</span>
+            <b className={`font-display text-2xl font-extrabold ${on ? 'text-neon' : 'text-white'}`}>{value}</b>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// Svaka tačka je igrač: pravilo (x) prema pravoj Maxbet granici (y); na dijagonali je pogođeno.
+function ModelScatter({ points }) {
+  const W = 440
+  const H = 400
+  const L = 40
+  const R = 12
+  const T = 12
+  const B = 40
+  const max = Math.max(12, Math.ceil(Math.max(...points.flat()) / 4) * 4)
+  const x = (v) => L + (W - L - R) * (v / max)
+  const y = (v) => T + (H - T - B) * (1 - v / max)
+  const ticks = Array.from({ length: max / 4 + 1 }, (_, i) => i * 4)
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Maxbetovo pravilo prema pravoj granici" className="block h-auto w-full">
+      {ticks.map((t) => (
+        <g key={t}>
+          <line x1={L} x2={W - R} y1={y(t)} y2={y(t)} stroke={COLORS.line} />
+          <line x1={x(t)} x2={x(t)} y1={T} y2={H - B} stroke={COLORS.line} />
+          <text x={L - 7} y={y(t) + 4} textAnchor="end" fontSize="11" fill={COLORS.faint} fontFamily="Barlow">
+            {t}
+          </text>
+          <text x={x(t)} y={H - B + 16} textAnchor="middle" fontSize="11" fill={COLORS.faint} fontFamily="Barlow">
+            {t}
+          </text>
+        </g>
+      ))}
+      <text x={(L + W - R) / 2} y={H - 6} textAnchor="middle" fontSize="12" fill={COLORS.muted} fontFamily="Barlow">
+        Maxbetovo pravilo
+      </text>
+      <text x="12" y={(T + H - B) / 2} textAnchor="middle" fontSize="12" fill={COLORS.muted} fontFamily="Barlow" transform={`rotate(-90 12 ${(T + H - B) / 2})`}>
+        Prava Maxbet granica
+      </text>
+      <line x1={x(0)} y1={y(0)} x2={x(max)} y2={y(max)} stroke={COLORS.accent} strokeWidth="1.5" strokeDasharray="5 4" />
+      {points.map(([rule, line], i) => {
+        const d = line - rule
+        const color = Math.abs(d) <= 1.01 ? COLORS.neon : d > 0 ? COLORS.gold : '#62c6ff'
+        return <circle key={i} cx={x(rule)} cy={y(line)} r="4.5" fill={color} fillOpacity="0.75" stroke="#12141a" strokeWidth="1" />
+      })}
+    </svg>
   )
 }

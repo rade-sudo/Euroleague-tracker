@@ -120,7 +120,12 @@ export function project(player, key, defense, boost = null) {
 }
 
 // Okvirna granica dok admin ne upiše Maxbet: 60% sezona + 40% forma, zaokruženo na .5.
-export const estimateLine = (player, form) => Math.floor(0.6 * player.season.pts + 0.4 * form) + 0.5
+// lineModel: Maxbetovo pravilo naučeno iz uvezenih granica (api/forma.php, formaLineModel), kad ih ima dovoljno:
+// a + b·sezona + c·forma, zaokruženo na najbližu .5 granicu. Inače stara procjena.
+export function estimateLine(player, form, lineModel = null) {
+  if (lineModel?.active) return Math.max(0.5, Math.round(lineModel.a + lineModel.b * player.season.pts + lineModel.c * form - 0.5) + 0.5)
+  return Math.floor(0.6 * player.season.pts + 0.4 * form) + 0.5
+}
 
 // Koliko igrač oscilira u poenima (zadnjih 10 u kojima je igrao).
 function pointsSd(player) {
@@ -174,14 +179,14 @@ function absenceFlag(absence) {
 }
 
 // teammates: svi igrači njegovog tima u kolu (za odsutne saigrače).
-export function enrichPlayer(player, defense, doubleTeams, teammates = []) {
+export function enrichPlayer(player, defense, doubleTeams, teammates = [], lineModel = null) {
   const boost = absenceBoost(player, teammates)
   const proj = {
     pts: project(player, 'pts', defense, boost),
     ast: project(player, 'ast', defense, boost),
     reb: project(player, 'reb', defense, boost),
   }
-  const est = estimateLine(player, proj.pts.form)
+  const est = estimateLine(player, proj.pts.form, lineModel)
   // offer === false: Maxbet je uvezen za utakmicu, a igrača nema u ponudi.
   // Tada se granica i šansa ne prikazuju (računaju se iz procjene samo za ekran uvoza).
   const offered = player.offer !== false
@@ -290,7 +295,7 @@ export function enrichRound(data) {
   const doubleTeams = new Set(data.double)
   const byTeam = new Map()
   for (const player of data.players) byTeam.set(player.team, [...(byTeam.get(player.team) ?? []), player])
-  return data.players.map((player) => enrichPlayer(player, data.defense, doubleTeams, byTeam.get(player.team)))
+  return data.players.map((player) => enrichPlayer(player, data.defense, doubleTeams, byTeam.get(player.team), data.lineModel))
 }
 
 // Tipovi PS / PA / PAS: projekcija zbira i koliko zbir oscilira (zadnjih 10 u kojima je igrao).

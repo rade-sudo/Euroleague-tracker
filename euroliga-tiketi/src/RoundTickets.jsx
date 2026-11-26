@@ -493,7 +493,14 @@ export default function RoundTickets({ rounds, friends, results, user, isAdmin, 
     run(async () => {
       const pick = await api(`/rounds/${round.id}/picks`, {
         method: 'POST',
-        body: JSON.stringify({ friendId: ticketFriendId, player, tip, playerId: selectedPlayer?.id }),
+        body: JSON.stringify({
+          friendId: ticketFriendId,
+          player,
+          tip,
+          playerId: selectedPlayer?.id,
+          // Šta je Forma rekla (uz Maxbet granicu), za "Uz Formu" u Statistici drugara.
+          ...(suggestedTip && parseTip(tip).plain ? { formaTip: suggestedTip === '+' ? '+' : '-', formaPct: selectedForma.chance.pct } : {}),
+        }),
       })
       updateTicket(ticketFriendId, (picks) => [...picks, pick])
       setPlayer('')

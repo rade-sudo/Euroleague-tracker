@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from './api.js'
 import AppHeader from './AppHeader.jsx'
+import FriendStats from './FriendStats.jsx'
+import { normalizePlayerName } from './players.js'
 import RoundWinners from './RoundWinners.jsx'
 import { useSessionGuard } from './session.js'
 
@@ -53,6 +55,15 @@ export default function StatsPage() {
   const [friendFilter, setFriendFilter] = useState('all')
   const [sort, setSort] = useState('count')
   const [expanded, setExpanded] = useState(null)
+  const [view, setView] = useState(() => (new URLSearchParams(window.location.search).get('pogled') === 'drugari' ? 'drugari' : 'igraci'))
+
+  function changeView(next) {
+    setView(next)
+    const url = new URL(window.location.href)
+    if (next === 'drugari') url.searchParams.set('pogled', 'drugari')
+    else url.searchParams.delete('pogled')
+    window.history.replaceState(null, '', url)
+  }
 
   useSessionGuard()
 
@@ -88,6 +99,39 @@ export default function StatsPage() {
           </p>
         )}
         {load.status === 'ready' && (
+          // Igrači ili Drugari; pamti se u adresi (?pogled=drugari), da se može poslati.
+          <div className="inline-flex rounded-[10px] bg-surface p-0.75 ring-1 ring-line ring-inset" role="group" aria-label="Pogled">
+            {[
+              ['igraci', 'Igrači'],
+              ['drugari', 'Drugari'],
+            ].map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                aria-pressed={view === id}
+                onClick={() => changeView(id)}
+                className={`rounded-lg px-3.5 py-1.75 font-display text-sm font-bold tracking-[0.1em] uppercase transition ${
+                  view === id ? 'bg-accent/12 text-accent ring-1 ring-accent/35 ring-inset' : 'text-zinc-400 hover:text-white'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
+        {load.status === 'ready' && view === 'drugari' && (
+          <>
+            <div className="flex flex-col gap-1.5">
+              <span className="font-display text-xs font-semibold tracking-[0.28em] text-accent uppercase">Euroliga · ocijenjena kola</span>
+              <h2 className="font-display text-[clamp(38px,5.5vw,56px)] leading-[0.95] font-extrabold text-balance text-white uppercase">
+                Statistika drugara
+              </h2>
+              <p className="max-w-184 text-zinc-400">Ko kako pogađa i u čemu je ko jak. Broje se samo ocijenjeni igrači.</p>
+            </div>
+            <FriendStats stats={stats} me={user.friendId} />
+          </>
+        )}
+        {load.status === 'ready' && view === 'igraci' && (
           <StatsContent
             stats={stats}
             me={user.friendId}
@@ -214,33 +258,15 @@ function StatsContent({ stats, me, friendFilter, onFriendFilter, sort, onSort, e
       </div>
 
       <div className="grid grid-cols-1 items-start gap-5 min-[960px]:grid-cols-[minmax(0,1.75fr)_minmax(0,1fr)]">
-        <section aria-labelledby="players-title" className={cardClass}>
-          <CardHead id="players-title" title="Igrači" note={`${players.length} ${playersWord(players.length)}`} />
-          <div
-            aria-hidden="true"
-            className="grid grid-cols-[28px_minmax(0,1fr)_56px_120px] items-center gap-3 border-y border-line bg-surface-2 px-4.5 py-2 font-display text-[11px] font-semibold uppercase tracking-[0.2em] text-zinc-600 max-[560px]:grid-cols-[22px_minmax(0,1fr)_96px]"
-          >
-            <span>#</span>
-            <span>Igrač</span>
-            <span className="text-right max-[560px]:hidden">Biran</span>
-            <span className="text-right">Prošao</span>
-          </div>
-          {sorted.length ? (
-            sorted.map((player, index) => (
-              <PlayerRow
-                key={player.key}
-                rank={index + 1}
-                player={player}
-                me={me}
-                friendShort={friendShort}
-                open={expanded === player.key}
-                onToggle={() => onToggle(player.key)}
-              />
-            ))
-          ) : (
-            <p className="px-4.5 py-6.5 text-sm text-zinc-600">Nema ocijenjenih igrača.</p>
-          )}
-        </section>
+        {/* Novi drugar ili poredak: spisak kreće od prve stranice. */}
+        <PlayersCard
+          key={`${friendFilter}-${sort}`}
+          players={sorted}
+          me={me}
+          friendShort={friendShort}
+          expanded={expanded}
+          onToggle={onToggle}
+        />
 
         <div className="flex min-w-0 flex-col gap-5">
           <section aria-labelledby="reliable-title" className={cardClass}>
@@ -404,5 +430,151 @@ function MiniRow({ title, sub, hits, count }) {
         {hits}/{count}
       </span>
     </div>
+  )
+}
+
+const PER_PAGE = [10, 25, 0]
+
+// Pretraga kao polje za igrača na tiketu: bez kvačica, svaka upisana riječ je početak riječi u imenu ("vezen" → Vezenkov).
+function matchesName(name, query) {
+  const words = normalizePlayerName(query).split(' ').filter(Boolean)
+  if (!words.length) return true
+  const tokens = normalizePlayerName(name).split(' ')
+  return words.every((word) => tokens.some((token) => token.startsWith(word)))
+}
+
+// Stranice: 1, …, oko trenutne, …, zadnja.
+function pageList(page, count) {
+  const shown = new Set([1, count, page - 1, page, page + 1].filter((p) => p >= 1 && p <= count))
+  const list = []
+  for (const p of [...shown].sort((a, b) => a - b)) {
+    if (list.length && p - list.at(-1) > 1) list.push('gap-' + p)
+    list.push(p)
+  }
+  return list
+}
+
+// Spisak igrača sa pretragom i stranicama; broj igrača ostaje kao u punom spisku.
+function PlayersCard({ players, me, friendShort, expanded, onToggle }) {
+  const topRef = useRef(null)
+  const [query, setQuery] = useState('')
+  const [page, setPage] = useState(1)
+  const [per, setPer] = useState(PER_PAGE[0])
+
+  const ranked = players.map((player, index) => ({ player, rank: index + 1 }))
+  const found = query.trim() ? ranked.filter((x) => matchesName(x.player.name, query)) : ranked
+  const pages = per ? Math.max(1, Math.ceil(found.length / per)) : 1
+  const current = Math.min(page, pages)
+  const shown = per ? found.slice((current - 1) * per, current * per) : found
+  const from = found.length ? (per ? (current - 1) * per + 1 : 1) : 0
+  const to = per ? Math.min(current * per, found.length) : found.length
+
+  function goTo(next) {
+    setPage(next)
+    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    topRef.current?.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' })
+  }
+
+  const pageButton = 'grid h-8.5 min-w-8.5 place-items-center rounded-lg px-2 font-display text-[15px] font-bold transition disabled:opacity-35'
+
+  return (
+    <section ref={topRef} aria-labelledby="players-title" className={`${cardClass} scroll-mt-4`}>
+      <CardHead id="players-title" title="Igrači" note={`${players.length} ${playersWord(players.length)}`} />
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-t border-line px-4.5 py-3">
+        <input
+          type="search"
+          value={query}
+          onChange={(event) => {
+            setQuery(event.target.value)
+            setPage(1)
+          }}
+          maxLength={40}
+          placeholder="Igrač, npr. Vezenkov"
+          aria-label="Traži igrača"
+          autoComplete="off"
+          className="h-11 w-full min-w-0 rounded-[9px] border border-line bg-surface-2 px-3.25 text-white outline-none placeholder:text-zinc-600 focus:border-accent focus:ring-3 focus:ring-accent/12 min-[560px]:max-w-80"
+        />
+        <span className="text-[12.5px] text-zinc-400 tabular-nums">
+          {found.length ? (
+            <>
+              Prikazano <b className="font-semibold text-white">{from === to ? from : `${from}–${to}`}</b> od{' '}
+              <b className="font-semibold text-white">{found.length}</b>
+            </>
+          ) : (
+            'Nema takvog igrača'
+          )}
+        </span>
+      </div>
+      <div
+        aria-hidden="true"
+        className="grid grid-cols-[28px_minmax(0,1fr)_56px_120px] items-center gap-3 border-y border-line bg-surface-2 px-4.5 py-2 font-display text-[11px] font-semibold uppercase tracking-[0.2em] text-zinc-600 max-[560px]:grid-cols-[22px_minmax(0,1fr)_96px]"
+      >
+        <span>#</span>
+        <span>Igrač</span>
+        <span className="text-right max-[560px]:hidden">Biran</span>
+        <span className="text-right">Prošao</span>
+      </div>
+      {shown.length ? (
+        shown.map(({ player, rank }) => (
+          <PlayerRow
+            key={player.key}
+            rank={rank}
+            player={player}
+            me={me}
+            friendShort={friendShort}
+            open={expanded === player.key}
+            onToggle={() => onToggle(player.key)}
+          />
+        ))
+      ) : (
+        <p className="px-4.5 py-6.5 text-sm text-zinc-600">{players.length ? 'Nijedan igrač ne odgovara pretrazi.' : 'Nema ocijenjenih igrača.'}</p>
+      )}
+      {(pages > 1 || found.length > PER_PAGE[0]) && (
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2.5 border-t border-line px-4.5 py-3">
+          <nav aria-label="Stranice" className="flex items-center gap-1">
+            <button type="button" aria-label="Prethodna stranica" disabled={current === 1} onClick={() => goTo(current - 1)} className={`${pageButton} text-zinc-400 hover:bg-surface-hover hover:text-white`}>
+              ‹
+            </button>
+            {pageList(current, pages).map((p) =>
+              typeof p === 'string' ? (
+                <span key={p} className="px-0.5 text-zinc-600">
+                  …
+                </span>
+              ) : (
+                <button
+                  key={p}
+                  type="button"
+                  aria-current={p === current ? 'page' : undefined}
+                  onClick={() => goTo(p)}
+                  className={`${pageButton} ${p === current ? 'bg-accent/12 text-accent ring-1 ring-accent/35 ring-inset' : 'text-zinc-400 hover:bg-surface-hover hover:text-white'}`}
+                >
+                  {p}
+                </button>
+              ),
+            )}
+            <button type="button" aria-label="Sljedeća stranica" disabled={current === pages} onClick={() => goTo(current + 1)} className={`${pageButton} text-zinc-400 hover:bg-surface-hover hover:text-white`}>
+              ›
+            </button>
+          </nav>
+          <div className="flex items-center gap-1.5 text-[12.5px] text-zinc-400" role="group" aria-label="Igrača po stranici">
+            <span>Po stranici</span>
+            {PER_PAGE.map((value) => (
+              <button
+                key={value}
+                type="button"
+                aria-pressed={per === value}
+                onClick={() => {
+                  setPer(value)
+                  setPage(1)
+                }}
+                className={`rounded-md px-2 py-1 font-semibold transition ${per === value ? 'bg-white/6 text-white ring-1 ring-white/12 ring-inset' : 'hover:text-white'}`}
+              >
+                {value || 'Svi'}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </section>
   )
 }

@@ -646,7 +646,7 @@ function formaAccuracyRounds(PDO $db): array
             $rounds[] = $round['number'];
         }
     }
-    return ['season' => formaSeasonLabel($season), 'rounds' => $rounds];
+    return ['season' => formaSeasonLabel($season), 'rounds' => $rounds, 'lineModel' => formaLineModel($db)];
 }
 
 // Forma kola kakva je bila prije utakmica (formaPayload uzima samo podatke od prije), plus šta su igrači dali
@@ -1096,7 +1096,8 @@ function handleFormaRoute(PDO $db, array $user, string $method, string $route): 
         syncSafely($db);
         $round = filter_var($_GET['round'] ?? null, FILTER_VALIDATE_INT);
         try {
-            respond(200, formaPayload($db, $user, $round === false ? null : $round));
+            // lineModel: Maxbetovo pravilo za procjenu granice (naučeno iz uvezenih granica).
+            respond(200, formaPayload($db, $user, $round === false ? null : $round) + ['lineModel' => formaLineModel($db)]);
         } catch (PDOException $e) {
             // 42S02: tabela ne postoji.
             if ($e->getCode() === '42S02') {
@@ -1133,4 +1134,172 @@ function handleFormaRoute(PDO $db, array $user, string $method, string $route): 
         }
         respond(200, formaSaveImport($db, readJson()));
     }
+}
+
+/* ---------- Maxbetovo pravilo za granice ---------- */
+
+// Pravilo se koristi tek od ovoliko granica; do tada stara procjena (60% sezona + 40% forma).
+const FORMA_MODEL_MIN_LINES = 60;
+const FORMA_MODEL_DEVIATIONS = 8;
+const FORMA_MODEL_POINTS = 400;
+
+// Forma poena kao u src/forma.js (project): zadnjih 5 utakmica tima, novija nosi više (5, 4, 3, 2, 1);
+// ako nije igrao nijednu, zadnjih 5 u kojima jeste.
+function formaFormPoints(array $player): float
+{
+    $weights = [5, 4, 3, 2, 1];
+    $played = [];
+    foreach (array_slice($player['last10'], 0, 5) as $i => $game) {
+        if (!$game['dnp']) {
+            $played[] = [$game['pts'], $weights[$i]];
+        }
+    }
+    if (!$played) {
+        foreach ($player['last10'] as $game) {
+            if (!$game['dnp'] && count($played) < 5) {
+                $played[] = [$game['pts'], $weights[count($played)]];
+            }
+        }
+    }
+    if (!$played) {
+        return (float) $player['season']['pts'];
+    }
+    $total = array_sum(array_column($played, 1));
+    return array_sum(array_map(fn (array $x) => $x[0] * $x[1], $played)) / $total;
+}
+
+// Najbliža Maxbet granica (uvijek .5): 13.2 → 12.5 ili 13.5, šta je bliže.
+function formaSnapLine(float $value): float
+{
+    return max(0.5, round($value - 0.5) + 0.5);
+}
+
+// Najmanji kvadrati za granica = a + b·sezona + c·forma (Gauss sa izborom pivota). null ako se ne može riješiti.
+function formaFitLine(array $samples): ?array
+{
+    $A = array_fill(0, 3, array_fill(0, 3, 0.0));
+    $v = array_fill(0, 3, 0.0);
+    foreach ($samples as $s) {
+        $x = [1.0, $s['S'], $s['F']];
+        for ($i = 0; $i < 3; $i++) {
+            $v[$i] += $x[$i] * $s['line'];
+            for ($j = 0; $j < 3; $j++) {
+                $A[$i][$j] += $x[$i] * $x[$j];
+            }
+        }
+    }
+    for ($i = 0; $i < 3; $i++) {
+        $p = $i;
+        for ($r = $i + 1; $r < 3; $r++) {
+            if (abs($A[$r][$i]) > abs($A[$p][$i])) {
+                $p = $r;
+            }
+        }
+        [$A[$i], $A[$p]] = [$A[$p], $A[$i]];
+        [$v[$i], $v[$p]] = [$v[$p], $v[$i]];
+        if (abs($A[$i][$i]) < 1e-9) {
+            return null;
+        }
+        for ($r = 0; $r < 3; $r++) {
+            if ($r === $i) {
+                continue;
+            }
+            $m = $A[$r][$i] / $A[$i][$i];
+            for ($c = $i; $c < 3; $c++) {
+                $A[$r][$c] -= $m * $A[$i][$c];
+            }
+            $v[$r] -= $m * $v[$i];
+        }
+    }
+    return [$v[0] / $A[0][0], $v[1] / $A[1][1], $v[2] / $A[2][2]];
+}
+
+// Koliko procjena pogađa prave granice: tačno, ±1 poen, prosječna greška.
+function formaLineScore(array $samples, callable $estimate): array
+{
+    $errors = array_map(fn (array $s) => abs($estimate($s) - $s['line']), $samples);
+    $n = max(1, count($errors));
+    return [
+        'exact' => (int) round(100 * count(array_filter($errors, fn (float $e) => $e < 0.01)) / $n),
+        'within1' => (int) round(100 * count(array_filter($errors, fn (float $e) => $e <= 1.01)) / $n),
+        'mae' => round(array_sum($errors) / $n, 2),
+    ];
+}
+
+// Maxbetovo pravilo iz svih granica sezone (Forma i obični + / − na tiketima), sa tačnošću, odstupanjima
+// i tačkama za grafikon. Računa se ponovo samo kad se granice promijene (poslije uvoza), inače iz settings.
+function formaLineModel(PDO $db): ?array
+{
+    $season = currentSeasonCode();
+    try {
+        $stmt = $db->prepare('SELECT COUNT(*), MAX(updated_at) FROM forma_lines WHERE season = ?');
+        $stmt->execute([$season]);
+        [$count, $updated] = $stmt->fetch(PDO::FETCH_NUM);
+    } catch (PDOException $e) {
+        error_log($e->getMessage());
+        return null;
+    }
+    if (!(int) $count) {
+        return null;
+    }
+    $key = "{$season}:{$count}:{$updated}";
+    $cached = json_decode(getSetting($db, 'line_model', ''), true);
+    if (is_array($cached) && ($cached['key'] ?? '') === $key) {
+        return $cached['model'];
+    }
+
+    $stmt = $db->prepare('SELECT DISTINCT round FROM forma_lines WHERE season = ? ORDER BY round');
+    $stmt->execute([$season]);
+    $samples = [];
+    foreach ($stmt->fetchAll(PDO::FETCH_COLUMN) as $round) {
+        $payload = formaPayload($db, ['role' => 'user'], (int) $round);
+        foreach ($payload['players'] as $player) {
+            if ($player['line'] === null) {
+                continue;
+            }
+            $samples[] = [
+                'name' => $player['name'],
+                'team' => $player['team'],
+                'round' => (int) $round,
+                'line' => (float) $player['line'],
+                'S' => (float) $player['season']['pts'],
+                'F' => formaFormPoints($player),
+            ];
+        }
+    }
+    $fit = count($samples) >= 3 ? formaFitLine($samples) : null;
+    $model = null;
+    if ($fit !== null) {
+        [$a, $b, $c] = $fit;
+        $raw = fn (array $s) => $a + $b * $s['S'] + $c * $s['F'];
+        $rule = fn (array $s) => formaSnapLine($raw($s));
+        $deviations = array_map(fn (array $s) => [
+            'name' => $s['name'],
+            'team' => $s['team'],
+            'round' => $s['round'],
+            'rule' => $rule($s),
+            'line' => $s['line'],
+            'diff' => $s['line'] - $rule($s),
+        ], $samples);
+        usort($deviations, fn (array $x, array $y) => abs($y['diff']) <=> abs($x['diff']));
+        $model = [
+            'a' => round($a, 4),
+            'b' => round($b, 4),
+            'c' => round($c, 4),
+            'n' => count($samples),
+            'min' => FORMA_MODEL_MIN_LINES,
+            'active' => count($samples) >= FORMA_MODEL_MIN_LINES,
+            'rounds' => array_values(array_unique(array_column($samples, 'round'))),
+            'rule' => formaLineScore($samples, $rule),
+            'old' => formaLineScore($samples, fn (array $s) => floor(0.6 * $s['S'] + 0.4 * $s['F']) + 0.5),
+            'deviations' => array_values(array_filter(
+                array_slice($deviations, 0, FORMA_MODEL_DEVIATIONS),
+                fn (array $d) => abs($d['diff']) >= 2
+            )),
+            // Za grafikon: [pravilo bez zaokruživanja, prava granica].
+            'points' => array_map(fn (array $s) => [round($raw($s), 1), $s['line']], array_slice($samples, -FORMA_MODEL_POINTS)),
+        ];
+    }
+    setSetting($db, 'line_model', json_encode(['key' => $key, 'model' => $model]));
+    return $model;
 }

@@ -670,7 +670,7 @@ function Method() {
     ],
     [
       'Granica',
-      'Prava granica sa Maxbeta kad je admin upiše. Do tada procjena: 60% prosjek sezone + 40% forma, zaokruženo na .5. Admin je mijenja u detalju igrača.',
+      'Prava granica sa Maxbeta kad je admin upiše. Do tada procjena po Maxbetovom pravilu, naučenom iz uvezenih granica (vidi Tačnost); dok ih nema 60, 60% prosjek sezone + 40% forma. Zaokruženo na .5.',
     ],
     [
       'Šansa za tiket',

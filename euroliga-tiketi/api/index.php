@@ -390,6 +390,17 @@ if (preg_match('#^/rounds/(\d+)/picks$#', $route, $m) && $method === 'POST') {
         throw $e;
     }
     $pickId = (int) $db->lastInsertId();
+    // Šta je Forma rekla u trenutku izbora (za "Uz Formu" u Statistici drugara); samo za obični + / −.
+    $formaTip = $body['formaTip'] ?? null;
+    $formaPct = filter_var($body['formaPct'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 0, 'max_range' => 100]]);
+    if ($parsedTip['plain'] && in_array($formaTip, ['+', '-'], true) && $formaPct !== false) {
+        try {
+            $db->prepare('UPDATE picks SET forma_tip = ?, forma_pct = ? WHERE id = ?')->execute([$formaTip, $formaPct, $pickId]);
+        } catch (PDOException $e) {
+            // Migracija 019 još nije pokrenuta: igrač je na tiketu, samo se Forma ne pamti.
+            error_log($e->getMessage());
+        }
+    }
     if ($gameId !== null) {
         markFirstPoints($db, $gameId);
     }

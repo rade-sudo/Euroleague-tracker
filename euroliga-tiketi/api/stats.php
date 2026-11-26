@@ -30,14 +30,21 @@ function statsPayload(PDO $db): array
     $short = friendShortNames($friends);
 
     $picks = [];
-    $rows = $db->query(
-        'SELECT r.number, p.friend_id, p.player_id, p.player, pl.name AS player_name, pl.club_name, p.hit
-         FROM picks p
-         JOIN rounds r ON r.id = p.round_id
-         LEFT JOIN players pl ON pl.id = p.player_id
-         WHERE p.hit IS NOT NULL
-         ORDER BY r.number, p.id'
-    );
+    // Za Statistiku drugara i tip, granica, pozicija, kod kuće ili u gostima, i šta je Forma rekla.
+    $sql = 'SELECT r.number, p.friend_id, p.player_id, p.player, pl.name AS player_name, pl.club_name, p.hit,
+                   p.tip, p.line, pl.position, pl.club_code, g.home_code, g.away_code, %s
+            FROM picks p
+            JOIN rounds r ON r.id = p.round_id
+            LEFT JOIN players pl ON pl.id = p.player_id
+            LEFT JOIN games g ON g.id = p.game_id
+            WHERE p.hit IS NOT NULL
+            ORDER BY r.number, p.id';
+    try {
+        $rows = $db->query(sprintf($sql, 'p.forma_tip'))->fetchAll();
+    } catch (PDOException $e) {
+        // Bez migracije 019 sve radi, samo bez "Uz Formu".
+        $rows = $db->query(sprintf($sql, 'NULL AS forma_tip'))->fetchAll();
+    }
     foreach ($rows as $row) {
         $picks[] = [
             'round' => (int) $row['number'],
@@ -47,6 +54,12 @@ function statsPayload(PDO $db): array
             'player' => $row['player_name'] ?? $row['player'],
             'club' => $row['club_name'],
             'hit' => (bool) $row['hit'],
+            'tip' => $row['tip'],
+            'line' => $row['line'] === null ? null : (float) $row['line'],
+            'pos' => $row['position'] ?: null,
+            // Kod kuće: klub igrača je domaćin te utakmice; null kad se ne zna.
+            'home' => $row['home_code'] === null || $row['club_code'] === null ? null : $row['club_code'] === $row['home_code'],
+            'formaTip' => $row['forma_tip'],
         ];
     }
 

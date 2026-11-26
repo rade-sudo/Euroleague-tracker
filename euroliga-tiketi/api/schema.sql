@@ -149,6 +149,9 @@ CREATE TABLE IF NOT EXISTS picks (
   slip_id    INT UNSIGNED NULL,
   player     VARCHAR(40) NOT NULL,
   tip        VARCHAR(30) NOT NULL DEFAULT '',
+  -- Šta je Forma rekla kad je igrač dodat (+ ili -, šansa u %), za Statistiku drugara.
+  forma_tip  CHAR(1) NULL,
+  forma_pct  TINYINT UNSIGNED NULL,
   -- Granica sa Maxbeta (upisuje admin) i poeni posle utakmice; did_play 0 = nije igrao.
   line       DECIMAL(3, 1) NULL,
   points     TINYINT UNSIGNED NULL,
